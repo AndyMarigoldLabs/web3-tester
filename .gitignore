@@ -1,0 +1,11 @@
+node_modules/
+tools/foundry/
+.npm-cache/
+tmp/
+test-results/
+playwright-report/
+.playwright/
+dist/
+coverage/
+*.log
+.env
