@@ -1,0 +1,79 @@
+import fs from 'node:fs';
+import path from 'node:path';
+import { chromium } from '@playwright/test';
+export function resolveRealWalletProfile(profileDir) {
+    const resolved = path.resolve(profileDir);
+    const profileDirectory = path.basename(resolved);
+    const userDataDir = path.dirname(resolved);
+    const looksLikeChromeProfile = /^(?:Default|Profile \d+)$/.test(profileDirectory);
+    if (looksLikeChromeProfile && fs.existsSync(path.join(userDataDir, 'Local State'))) {
+        return { profileDirectory, userDataDir };
+    }
+    return { userDataDir: resolved };
+}
+async function loadSynpressMetaMask() {
+    return (await import('@synthetixio/synpress-metamask/playwright'));
+}
+async function isVisible(locator) {
+    return locator.isVisible().catch(() => false);
+}
+async function prepareMetaMask({ expectedAddress, setup, unlockForFixture, wallet, }) {
+    const page = wallet.page;
+    const onboardingImport = page.locator(wallet.onboardingPage.selectors.GetStartedPageSelectors.importWallet);
+    if (await isVisible(onboardingImport)) {
+        if (!setup?.password || !setup.seedPhrase) {
+            throw new Error('MetaMask is on onboarding. Provide setup.password and setup.seedPhrase to import a wallet through web3-tester, or use a preconfigured persistent profile.');
+        }
+        await wallet.importWallet(setup.seedPhrase);
+    }
+    const unlockPassword = page.locator(wallet.lockPage.selectors.passwordInput);
+    if (await isVisible(unlockPassword)) {
+        if (!setup?.password) {
+            throw new Error('MetaMask profile is locked. Provide setup.password to unlock through web3-tester, or unlock the persistent profile before running.');
+        }
+        await unlockForFixture(page, setup.password);
+    }
+    const address = await wallet.getAccountAddress().catch(() => undefined);
+    if (expectedAddress && address && address.toLowerCase() !== expectedAddress.toLowerCase()) {
+        throw new Error(`MetaMask account ${address} does not match expected address ${expectedAddress}.`);
+    }
+}
+export async function launchRealWallet(options) {
+    const { MetaMask, getExtensionId, unlockForFixture } = await loadSynpressMetaMask();
+    const extensionName = options.extensionName ?? 'MetaMask';
+    const profile = resolveRealWalletProfile(options.profileDir);
+    const context = await chromium.launchPersistentContext(profile.userDataDir, {
+        args: [
+            ...(profile.profileDirectory ? [`--profile-directory=${profile.profileDirectory}`] : []),
+            `--disable-extensions-except=${options.extensionPath}`,
+            `--load-extension=${options.extensionPath}`,
+        ],
+        baseURL: options.baseURL,
+        headless: options.headless ?? false,
+        slowMo: options.slowMo,
+    });
+    const extensionId = await getExtensionId(context, extensionName);
+    const page = context.pages()[0] ?? (await context.newPage());
+    await page.goto(`chrome-extension://${extensionId}/home.html`);
+    const wallet = new MetaMask(context, page, options.setup?.password ?? '', extensionId);
+    await prepareMetaMask({
+        expectedAddress: options.expectedAddress,
+        setup: options.setup,
+        unlockForFixture,
+        wallet,
+    });
+    return {
+        approveTokenPermission: (approvalOptions) => wallet.approveTokenPermission(approvalOptions),
+        close: () => context.close(),
+        confirmSignature: () => wallet.confirmSignature(),
+        confirmTransaction: (confirmationOptions) => wallet.confirmTransaction(confirmationOptions),
+        connectToDapp: (accounts) => wallet.connectToDapp(accounts),
+        context,
+        extensionId,
+        getAccountAddress: () => wallet.getAccountAddress(),
+        rejectSignature: () => wallet.rejectSignature(),
+        rejectTransaction: () => wallet.rejectTransaction(),
+        wallet,
+    };
+}
+//# sourceMappingURL=real-wallet.js.map
