@@ -1,17 +1,17 @@
 # Consuming Web3 Tester From Fjord V4
 
-This guide covers adding this repo to Fjord v4 as a dependency.
+This guide covers adding the published package to Fjord v4 as a dependency.
 
 ## Install
 
 ```bash
-npm install --save-dev github:AndyMarigoldLabs/web3-tester
+npm install --save-dev @marigoldlabs/web3-tester
 ```
 
-For a pinned dependency, use a commit SHA:
+For a pinned dependency, use an exact package version:
 
 ```bash
-npm install --save-dev github:AndyMarigoldLabs/web3-tester#<commit-sha>
+npm install --save-dev @marigoldlabs/web3-tester@<version>
 ```
 
 ## Playwright Config
@@ -40,7 +40,7 @@ export default defineConfig({
 ## Local Deterministic Tests
 
 ```ts
-import { expect, test } from '@andy-marigold-labs/web3-tester/fixtures';
+import { expect, test } from '@marigoldlabs/web3-tester/fixtures';
 
 test('connects through the injected provider', async ({ page, wallet }) => {
   await page.goto('/');
@@ -83,7 +83,7 @@ test.use({
 ## Live Sepolia Tests
 
 ```ts
-import { expect, test } from '@andy-marigold-labs/web3-tester/live-fixtures';
+import { expect, test } from '@marigoldlabs/web3-tester/live-fixtures';
 
 test.skip(!process.env.FJORD_PRIVATE_KEY, 'FJORD_PRIVATE_KEY is required.');
 
@@ -120,4 +120,4 @@ Keep destructive or expensive tests behind separate flags so normal CI remains r
 - Run live Sepolia read-only tests on a scheduled job or protected branch.
 - Run live mutation tests manually with approval.
 - Store `FJORD_PRIVATE_KEY` and `SEPOLIA_RPC_URL` only as CI secrets.
-- Pin this repo by commit SHA once Fjord depends on it.
+- Pin the npm dependency to an exact version once Fjord depends on it.

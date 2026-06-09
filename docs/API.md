@@ -1,14 +1,15 @@
 # API Reference
 
-This package exposes two Playwright fixture families:
+This package exposes two Playwright fixture families and one real-wallet adapter:
 
 - `fixtures`: local deterministic Anvil tests.
 - `live-fixtures`: live Sepolia tests that sign with a runtime-only private key.
+- `real-wallet`: persistent Chromium and MetaMask automation for fully in-UI Web3 tests.
 
 ## Local Fixtures
 
 ```ts
-import { expect, test } from '@andy-marigold-labs/web3-tester/fixtures';
+import { expect, test } from '@marigoldlabs/web3-tester/fixtures';
 ```
 
 Fixtures:
@@ -26,7 +27,7 @@ Each `wallet` test snapshots chain state before test code runs and reverts after
 ## Live Fixtures
 
 ```ts
-import { expect, test } from '@andy-marigold-labs/web3-tester/live-fixtures';
+import { expect, test } from '@marigoldlabs/web3-tester/live-fixtures';
 ```
 
 Fixtures:
@@ -47,6 +48,53 @@ Optional:
 ```bash
 SEPOLIA_RPC_URL=https://...
 ```
+
+## Real Wallet
+
+```ts
+import { launchRealWallet } from '@marigoldlabs/web3-tester/real-wallet';
+
+const session = await launchRealWallet({
+  extensionPath: process.env.FJORD_REAL_WALLET_EXTENSION_PATH as string,
+  profileDir: process.env.FJORD_REAL_WALLET_PROFILE_DIR as string,
+  expectedAddress: process.env.FJORD_REAL_WALLET_ADDRESS,
+  setup: process.env.FJORD_REAL_WALLET_PASSWORD
+    ? {
+        password: process.env.FJORD_REAL_WALLET_PASSWORD,
+        seedPhrase: process.env.FJORD_REAL_WALLET_SECRET_RECOVERY_PHRASE,
+      }
+    : undefined,
+});
+```
+
+`launchRealWallet` starts a persistent Chromium context with the configured unpacked MetaMask extension. `profileDir` can be either a dedicated Playwright user data directory or a Chrome profile directory such as `Default` or `Profile 1`; Chrome profile paths are mapped back to their user data root and launched with `--profile-directory`.
+
+Options:
+
+| Option | Description |
+| --- | --- |
+| `extensionPath` | Required path to the unpacked MetaMask extension. |
+| `profileDir` | Required persistent Chromium user data directory, or a Chrome profile directory. |
+| `baseURL` | Optional Playwright base URL for pages opened from the returned context. |
+| `expectedAddress` | Optional account address assertion after unlock/import. |
+| `extensionName` | Extension name used to resolve the extension ID. Defaults to `MetaMask`. |
+| `headless` | Chromium headless setting. Defaults to `false` because extensions require headed Chromium in normal use. |
+| `setup.password` | Password used to unlock MetaMask, or to import a seed phrase when onboarding is visible. |
+| `setup.seedPhrase` | Seed phrase used only if MetaMask opens on onboarding. |
+| `slowMo` | Optional Playwright slow-motion delay. |
+
+Returned session methods:
+
+| Method | Description |
+| --- | --- |
+| `connectToDapp(accounts?)` | Approves a dapp connection request in MetaMask. |
+| `confirmSignature()` | Confirms a pending signature request. |
+| `confirmTransaction(options?)` | Confirms a pending transaction request. |
+| `approveTokenPermission(options?)` | Approves a pending ERC-20 spending permission request. |
+| `rejectSignature()` | Rejects a pending signature request. |
+| `rejectTransaction()` | Rejects a pending transaction request. |
+| `getAccountAddress()` | Returns the selected MetaMask account. |
+| `close()` | Closes the persistent browser context. |
 
 ## MockWalletController
 
