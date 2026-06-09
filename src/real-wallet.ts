@@ -8,7 +8,7 @@ export type RealWalletProfile = {
 };
 
 export type RealWalletSetup = {
-  password: string;
+  password?: string;
   seedPhrase?: string;
 };
 
@@ -66,6 +66,7 @@ export type RealWalletSession = {
 
 const DEFAULT_EXTENSION_NAME = 'MetaMask';
 const DEFAULT_TIMEOUT_MS = 30_000;
+const DEFAULT_WALLET_PASSWORD = 'web3-tester-wallet';
 const SHORT_TIMEOUT_MS = 2_000;
 const testId = (id: string) => `[data-testid="${id}"]`;
 
@@ -261,6 +262,10 @@ function shortAddress(address: string) {
   return `${address.slice(0, 6)}...${address.slice(-4)}`.toLowerCase();
 }
 
+function passwordForSetup(setup: RealWalletSetup | undefined) {
+  return setup?.password ?? (setup?.seedPhrase ? DEFAULT_WALLET_PASSWORD : undefined);
+}
+
 async function fillSeedPhrase(page: Page, seedPhrase: string) {
   const words = seedPhrase.trim().split(/\s+/);
   if (words.length < 12) {
@@ -292,9 +297,10 @@ async function fillSeedPhrase(page: Page, seedPhrase: string) {
 }
 
 async function importMetaMaskWallet(page: Page, setup: RealWalletSetup) {
-  if (!setup.password || !setup.seedPhrase) {
+  const password = passwordForSetup(setup);
+  if (!password || !setup.seedPhrase) {
     throw new Error(
-      'MetaMask is on onboarding. Provide setup.password and setup.seedPhrase to import a wallet through web3-tester, or use a preconfigured persistent profile.',
+      'MetaMask is on onboarding. Provide setup.seedPhrase to import a wallet through web3-tester, or use a preconfigured persistent profile.',
     );
   }
 
@@ -340,13 +346,13 @@ async function importMetaMaskWallet(page: Page, setup: RealWalletSetup) {
 
   const passwordFilled = await fillFirstVisible(
     [page.locator(testId('create-password-new-input')), page.locator('input[type="password"]').nth(0)],
-    setup.password,
+    password,
   );
   if (!passwordFilled) throw new Error('Unable to find MetaMask password input.');
 
   const confirmationPasswordFilled = await fillFirstVisible(
     [page.locator(testId('create-password-confirm-input')), page.locator('input[type="password"]').nth(1)],
-    setup.password,
+    password,
   );
   if (!confirmationPasswordFilled) throw new Error('Unable to find MetaMask password confirmation input.');
 
@@ -641,9 +647,9 @@ async function prepareMetaMask({
     (await isVisible(onboardingCreate, SHORT_TIMEOUT_MS).catch(() => false)) ||
     (await isVisible(onboardingTerms, SHORT_TIMEOUT_MS).catch(() => false))
   ) {
-    if (!setup?.password || !setup.seedPhrase) {
+    if (!setup?.seedPhrase) {
       throw new Error(
-        'MetaMask is on onboarding. Provide setup.password and setup.seedPhrase to import a wallet through web3-tester, or use a preconfigured persistent profile.',
+        'MetaMask is on onboarding. Provide setup.seedPhrase to import a wallet through web3-tester, or use a preconfigured persistent profile.',
       );
     }
 
@@ -652,13 +658,14 @@ async function prepareMetaMask({
 
   const unlockPassword = page.locator(testId('unlock-password'));
   if (await isVisible(unlockPassword, SHORT_TIMEOUT_MS).catch(() => false)) {
-    if (!setup?.password) {
+    const password = passwordForSetup(setup);
+    if (!password) {
       throw new Error(
         'MetaMask profile is locked. Provide setup.password to unlock through web3-tester, or unlock the persistent profile before running.',
       );
     }
 
-    await unlockMetaMask(page, setup.password);
+    await unlockMetaMask(page, password);
   }
 
   if (!expectedAddress) return;

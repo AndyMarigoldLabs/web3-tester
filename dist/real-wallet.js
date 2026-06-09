@@ -3,6 +3,7 @@ import path from 'node:path';
 import { chromium } from '@playwright/test';
 const DEFAULT_EXTENSION_NAME = 'MetaMask';
 const DEFAULT_TIMEOUT_MS = 30_000;
+const DEFAULT_WALLET_PASSWORD = 'web3-tester-wallet';
 const SHORT_TIMEOUT_MS = 2_000;
 const testId = (id) => `[data-testid="${id}"]`;
 function extensionUrl(extensionId, page = 'home.html') {
@@ -159,6 +160,9 @@ async function getNotificationPage(context, extensionId, timeout = DEFAULT_TIMEO
 function shortAddress(address) {
     return `${address.slice(0, 6)}...${address.slice(-4)}`.toLowerCase();
 }
+function passwordForSetup(setup) {
+    return setup?.password ?? (setup?.seedPhrase ? DEFAULT_WALLET_PASSWORD : undefined);
+}
 async function fillSeedPhrase(page, seedPhrase) {
     const words = seedPhrase.trim().split(/\s+/);
     if (words.length < 12) {
@@ -181,8 +185,9 @@ async function fillSeedPhrase(page, seedPhrase) {
     throw new Error('Unable to find MetaMask seed phrase input fields.');
 }
 async function importMetaMaskWallet(page, setup) {
-    if (!setup.password || !setup.seedPhrase) {
-        throw new Error('MetaMask is on onboarding. Provide setup.password and setup.seedPhrase to import a wallet through web3-tester, or use a preconfigured persistent profile.');
+    const password = passwordForSetup(setup);
+    if (!password || !setup.seedPhrase) {
+        throw new Error('MetaMask is on onboarding. Provide setup.seedPhrase to import a wallet through web3-tester, or use a preconfigured persistent profile.');
     }
     await page.bringToFront().catch(() => undefined);
     const terms = page.locator(testId('onboarding-terms-checkbox'));
@@ -211,10 +216,10 @@ async function importMetaMaskWallet(page, setup) {
     ], DEFAULT_TIMEOUT_MS);
     if (!seedConfirmed)
         throw new Error('Unable to confirm MetaMask seed phrase import.');
-    const passwordFilled = await fillFirstVisible([page.locator(testId('create-password-new-input')), page.locator('input[type="password"]').nth(0)], setup.password);
+    const passwordFilled = await fillFirstVisible([page.locator(testId('create-password-new-input')), page.locator('input[type="password"]').nth(0)], password);
     if (!passwordFilled)
         throw new Error('Unable to find MetaMask password input.');
-    const confirmationPasswordFilled = await fillFirstVisible([page.locator(testId('create-password-confirm-input')), page.locator('input[type="password"]').nth(1)], setup.password);
+    const confirmationPasswordFilled = await fillFirstVisible([page.locator(testId('create-password-confirm-input')), page.locator('input[type="password"]').nth(1)], password);
     if (!confirmationPasswordFilled)
         throw new Error('Unable to find MetaMask password confirmation input.');
     const passwordTerms = page.locator(testId('create-password-terms'));
@@ -433,17 +438,18 @@ async function prepareMetaMask({ expectedAddress, page, setup, wallet, }) {
     if ((await isVisible(onboardingImport, SHORT_TIMEOUT_MS).catch(() => false)) ||
         (await isVisible(onboardingCreate, SHORT_TIMEOUT_MS).catch(() => false)) ||
         (await isVisible(onboardingTerms, SHORT_TIMEOUT_MS).catch(() => false))) {
-        if (!setup?.password || !setup.seedPhrase) {
-            throw new Error('MetaMask is on onboarding. Provide setup.password and setup.seedPhrase to import a wallet through web3-tester, or use a preconfigured persistent profile.');
+        if (!setup?.seedPhrase) {
+            throw new Error('MetaMask is on onboarding. Provide setup.seedPhrase to import a wallet through web3-tester, or use a preconfigured persistent profile.');
         }
         await importMetaMaskWallet(page, setup);
     }
     const unlockPassword = page.locator(testId('unlock-password'));
     if (await isVisible(unlockPassword, SHORT_TIMEOUT_MS).catch(() => false)) {
-        if (!setup?.password) {
+        const password = passwordForSetup(setup);
+        if (!password) {
             throw new Error('MetaMask profile is locked. Provide setup.password to unlock through web3-tester, or unlock the persistent profile before running.');
         }
-        await unlockMetaMask(page, setup.password);
+        await unlockMetaMask(page, password);
     }
     if (!expectedAddress)
         return;

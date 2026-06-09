@@ -4,7 +4,7 @@ export type RealWalletProfile = {
     userDataDir: string;
 };
 export type RealWalletSetup = {
-    password: string;
+    password?: string;
     seedPhrase?: string;
 };
 export type RealWalletGasSettings = 'site' | 'low' | 'market' | 'aggressive' | {

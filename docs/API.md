@@ -58,7 +58,7 @@ const session = await launchRealWallet({
   extensionPath: process.env.FJORD_REAL_WALLET_EXTENSION_PATH as string,
   profileDir: process.env.FJORD_REAL_WALLET_PROFILE_DIR as string,
   expectedAddress: process.env.FJORD_REAL_WALLET_ADDRESS,
-  setup: process.env.FJORD_REAL_WALLET_PASSWORD
+  setup: process.env.FJORD_REAL_WALLET_PASSWORD || process.env.FJORD_REAL_WALLET_SECRET_RECOVERY_PHRASE
     ? {
         password: process.env.FJORD_REAL_WALLET_PASSWORD,
         seedPhrase: process.env.FJORD_REAL_WALLET_SECRET_RECOVERY_PHRASE,
@@ -79,8 +79,8 @@ Options:
 | `expectedAddress` | Optional account address assertion after unlock/import. |
 | `extensionName` | Extension name used to resolve the extension ID. Defaults to `MetaMask`. |
 | `headless` | Chromium headless setting. Defaults to `false` because extensions require headed Chromium in normal use. |
-| `setup.password` | Password used to unlock MetaMask, or to import a seed phrase when onboarding is visible. |
-| `setup.seedPhrase` | Seed phrase used only if MetaMask opens on onboarding. |
+| `setup.password` | Optional password used to unlock MetaMask, or to import a seed phrase when onboarding is visible. |
+| `setup.seedPhrase` | Seed phrase used if MetaMask opens on onboarding. When no password is supplied, web3-tester imports with a deterministic test profile password. |
 | `slowMo` | Optional Playwright slow-motion delay. |
 
 Returned session methods:

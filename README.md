@@ -63,7 +63,7 @@ const wallet = await launchRealWallet({
   expectedAddress: process.env.FJORD_REAL_WALLET_ADDRESS,
   extensionPath: process.env.FJORD_REAL_WALLET_EXTENSION_PATH as string,
   profileDir: process.env.FJORD_REAL_WALLET_PROFILE_DIR as string,
-  setup: process.env.FJORD_REAL_WALLET_PASSWORD
+  setup: process.env.FJORD_REAL_WALLET_PASSWORD || process.env.FJORD_REAL_WALLET_SECRET_RECOVERY_PHRASE
     ? {
         password: process.env.FJORD_REAL_WALLET_PASSWORD,
         seedPhrase: process.env.FJORD_REAL_WALLET_SECRET_RECOVERY_PHRASE,
@@ -135,8 +135,8 @@ Copy `.env.example` for local reference. Do not commit real private keys.
 | `FJORD_REAL_WALLET_EXTENSION_PATH` | unset | Path to the unpacked MetaMask extension for real-wallet tests. |
 | `FJORD_REAL_WALLET_PROFILE_DIR` | unset | Persistent Chromium user-data directory, or a Chrome profile directory such as `Profile 1`. |
 | `FJORD_REAL_WALLET_ADDRESS` | unset | Optional expected account address checked after unlock/import. |
-| `FJORD_REAL_WALLET_PASSWORD` | unset | Optional MetaMask password used to unlock or import the profile. |
-| `FJORD_REAL_WALLET_SECRET_RECOVERY_PHRASE` | unset | Optional seed phrase used only when MetaMask opens on onboarding. |
+| `FJORD_REAL_WALLET_PASSWORD` | unset | Optional MetaMask password used to unlock the profile. When importing from a seed without a password, web3-tester uses a deterministic test profile password. |
+| `FJORD_REAL_WALLET_SECRET_RECOVERY_PHRASE` | unset | Optional seed phrase used when MetaMask opens on onboarding. |
 
 ## Package Surface
 
