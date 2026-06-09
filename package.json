@@ -61,15 +61,16 @@
     "verify": "npm run typecheck && npm run build && npm test"
   },
   "dependencies": {
-    "@synthetixio/synpress-metamask": "0.0.14",
-    "viem": "^2.52.0"
+    "@synthetixio/synpress-metamask": "0.0.14"
   },
   "peerDependencies": {
-    "@playwright/test": ">=1.56.0"
+    "@playwright/test": ">=1.56.0",
+    "viem": ">=2.39.3 <3"
   },
   "devDependencies": {
     "@playwright/test": "^1.56.1",
     "@types/node": "^24.10.1",
-    "typescript": "^5.9.3"
+    "typescript": "^5.9.3",
+    "viem": "^2.52.0"
   }
 }
