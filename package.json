@@ -44,6 +44,14 @@
       "types": "./dist/real-wallet.d.ts",
       "import": "./dist/real-wallet.js"
     },
+    "./real-wallet-fixtures": {
+      "types": "./dist/real-wallet-fixtures.d.ts",
+      "import": "./dist/real-wallet-fixtures.js"
+    },
+    "./metamask-extension": {
+      "types": "./dist/metamask-extension.d.ts",
+      "import": "./dist/metamask-extension.js"
+    },
     "./package.json": "./package.json"
   },
   "engines": {

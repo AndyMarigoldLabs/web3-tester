@@ -16,6 +16,7 @@ export default defineConfig({
         '**/private-key-rpc-client.spec.ts',
         '**/provider-injection.spec.ts',
         '**/real-wallet.spec.ts',
+        '**/real-wallet-smoke.spec.ts',
       ],
       use: {
         ...devices['Desktop Chrome'],
