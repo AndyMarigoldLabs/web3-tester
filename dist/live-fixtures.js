@@ -1,33 +1,59 @@
 import { test as base } from '@playwright/test';
 import { sepolia } from 'viem/chains';
-import { MockWalletController } from './mock-wallet-controller.js';
+import { MockWalletController, } from './mock-wallet-controller.js';
 import { PrivateKeyRpcClient } from './private-key-rpc-client.js';
-export const test = base.extend({
-    liveClient: async ({}, use) => {
-        const privateKey = process.env.FJORD_PRIVATE_KEY;
-        if (!privateKey) {
-            throw new Error('FJORD_PRIVATE_KEY is required for live Sepolia Fjord tests.');
+const resolveEnv = (names) => {
+    for (const name of names) {
+        if (name && process.env[name]) {
+            return process.env[name];
         }
-        await use(new PrivateKeyRpcClient({
-            privateKey: privateKey,
-            chain: sepolia,
-            rpcUrl: process.env.SEPOLIA_RPC_URL,
-        }));
-    },
-    wallet: async ({ page, liveClient }, use) => {
-        const wallet = new MockWalletController(page, liveClient, {
-            accounts: [liveClient.account.address],
-            chainId: sepolia.id,
-            autoApprove: true,
-            connected: true,
-            providerInfo: {
-                name: 'MetaMask',
-                rdns: 'io.metamask',
+    }
+    return undefined;
+};
+/**
+ * Builds a live-chain fixture family. The defaults read the signing key from
+ * WEB3_TESTER_PRIVATE_KEY (with the legacy FJORD_PRIVATE_KEY still honored)
+ * and target Sepolia; pass options to bind other chains or env var names.
+ */
+export function createLiveFixtures(defaults = {}) {
+    return base.extend({
+        liveOptions: [
+            async ({}, use) => {
+                await use(defaults);
             },
-        });
-        await wallet.injectMockProvider();
-        await use(wallet);
-    },
-});
+            { option: true },
+        ],
+        liveClient: async ({ liveOptions }, use) => {
+            const options = { ...defaults, ...liveOptions };
+            const privateKeyEnv = options.privateKeyEnv ?? 'WEB3_TESTER_PRIVATE_KEY';
+            const privateKey = resolveEnv([privateKeyEnv, 'FJORD_PRIVATE_KEY']);
+            if (!privateKey) {
+                throw new Error(`${privateKeyEnv} is required for live-chain tests.`);
+            }
+            const rpcUrlEnv = options.rpcUrlEnv ?? 'WEB3_TESTER_RPC_URL';
+            await use(new PrivateKeyRpcClient({
+                privateKey: privateKey,
+                chain: options.chain ?? sepolia,
+                rpcUrl: resolveEnv([rpcUrlEnv, 'SEPOLIA_RPC_URL']),
+            }));
+        },
+        wallet: async ({ page, liveClient, liveOptions }, use) => {
+            const options = { ...defaults, ...liveOptions };
+            const wallet = new MockWalletController(page, liveClient, {
+                accounts: [liveClient.account.address],
+                chainId: liveClient.chain.id,
+                autoApprove: true,
+                connected: true,
+                // Masquerade as MetaMask by default so production wallet selectors
+                // (wagmi / EIP-6963) detect the injected provider unmodified.
+                providerInfo: { name: 'MetaMask', rdns: 'io.metamask' },
+                ...options.walletOptions,
+            });
+            await wallet.injectMockProvider();
+            await use(wallet);
+        },
+    });
+}
+export const test = createLiveFixtures();
 export { expect } from '@playwright/test';
 //# sourceMappingURL=live-fixtures.js.map

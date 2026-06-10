@@ -5,7 +5,12 @@ import { foundry } from 'viem/chains';
 const DEFAULT_MNEMONIC = 'test test test test test test test test test test test junk';
 const DEFAULT_FOUNDRY_DOCKER_IMAGE = 'ghcr.io/foundry-rs/foundry:latest';
 const CONTAINER_ANVIL_PORT = 8545;
-const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+const sleep = (ms, options = {}) => new Promise((resolve) => {
+    const timer = setTimeout(resolve, ms);
+    if (options.unref) {
+        timer.unref();
+    }
+});
 const buildAnvilArgs = (options, host, port, chainId) => {
     const args = [
         '--host',
@@ -27,6 +32,12 @@ const buildAnvilArgs = (options, host, port, chainId) => {
     if (options.forkUrl) {
         args.push('--fork-url', options.forkUrl);
     }
+    if (options.forkBlockNumber !== undefined) {
+        args.push('--fork-block-number', String(options.forkBlockNumber));
+    }
+    if (options.extraArgs) {
+        args.push(...options.extraArgs);
+    }
     return args;
 };
 const stopDockerContainer = async (containerName) => {
@@ -37,7 +48,7 @@ const stopDockerContainer = async (containerName) => {
     await Promise.race([
         once(stopper, 'exit').catch(() => undefined),
         once(stopper, 'error').catch(() => undefined),
-        sleep(5_000),
+        sleep(5_000, { unref: true }),
     ]);
 };
 export class AnvilInstance {
@@ -91,20 +102,30 @@ export class AnvilInstance {
         });
         const instance = new AnvilInstance(anvilProcess, { host, port, chainId }, containerName);
         const logs = [];
+        let capturingLogs = true;
+        let listening = false;
         let spawnError;
         anvilProcess.once('error', (error) => {
             spawnError = error;
         });
+        const handleOutput = (text) => {
+            if (capturingLogs) {
+                logs.push(text);
+            }
+            if (!listening && /Listening on/i.test(text)) {
+                listening = true;
+            }
+        };
         anvilProcess.stdout.on('data', (chunk) => {
             const text = chunk.toString();
-            logs.push(text);
+            handleOutput(text);
             if (!options.silent) {
                 process.stdout.write(text);
             }
         });
         anvilProcess.stderr.on('data', (chunk) => {
             const text = chunk.toString();
-            logs.push(text);
+            handleOutput(text);
             if (!options.silent) {
                 process.stderr.write(text);
             }
@@ -117,10 +138,25 @@ export class AnvilInstance {
                     : `Failed to start Anvil executable "${executable}". Install Foundry or set ANVIL_EXECUTABLE to the Anvil binary path.\n${spawnError.message}`);
             }
             if (anvilProcess.exitCode !== null) {
-                throw new Error(`Anvil exited before it became ready with code ${anvilProcess.exitCode}.\n${logs.join('')}`);
+                // The most common cause is the port being held by another process
+                // (anvil fails to bind and exits), so surface that hint with the logs.
+                throw new Error(`Anvil exited before it became ready with code ${anvilProcess.exitCode}. ` +
+                    `If the logs mention the address being in use, another node is already running on port ${port}.\n${logs.join('')}`);
             }
-            if (await instance.isReady()) {
-                return instance;
+            // Only probe the RPC endpoint after the spawned process itself reports
+            // it is listening — probing earlier can succeed against a pre-existing
+            // node on the same port and silently adopt the wrong chain.
+            if (listening) {
+                const reportedChainId = await instance.reportedChainId();
+                if (reportedChainId !== undefined) {
+                    if (reportedChainId !== chainId) {
+                        await instance.stop();
+                        throw new Error(`Anvil at ${instance.rpcUrl} reports chain id ${reportedChainId} but ${chainId} was requested. ` +
+                            `Another node is likely running on port ${port}.`);
+                    }
+                    capturingLogs = false;
+                    return instance;
+                }
             }
             await sleep(100);
         }
@@ -135,9 +171,16 @@ export class AnvilInstance {
             return;
         }
         this.process.kill();
-        await once(this.process, 'exit').catch(() => undefined);
+        const exited = await Promise.race([
+            once(this.process, 'exit').then(() => true, () => true),
+            sleep(5_000, { unref: true }).then(() => false),
+        ]);
+        if (!exited && this.process.exitCode === null) {
+            this.process.kill('SIGKILL');
+            await once(this.process, 'exit').catch(() => undefined);
+        }
     }
-    async isReady() {
+    async reportedChainId() {
         try {
             const response = await fetch(this.rpcUrl, {
                 method: 'POST',
@@ -145,14 +188,18 @@ export class AnvilInstance {
                 body: JSON.stringify({
                     id: 1,
                     jsonrpc: '2.0',
-                    method: 'web3_clientVersion',
+                    method: 'eth_chainId',
                     params: [],
                 }),
             });
-            return response.ok;
+            if (!response.ok) {
+                return undefined;
+            }
+            const body = (await response.json());
+            return typeof body.result === 'string' ? Number(BigInt(body.result)) : undefined;
         }
         catch {
-            return false;
+            return undefined;
         }
     }
 }

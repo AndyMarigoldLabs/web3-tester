@@ -13,6 +13,8 @@ export type AnvilOptions = {
     mnemonic?: string;
     blockTime?: number;
     forkUrl?: string;
+    forkBlockNumber?: number;
+    extraArgs?: readonly string[];
     timeoutMs?: number;
     silent?: boolean;
 };
@@ -28,7 +30,7 @@ export declare class AnvilInstance {
     private constructor();
     static start(options?: AnvilOptions): Promise<AnvilInstance>;
     stop(): Promise<void>;
-    private isReady;
+    private reportedChainId;
 }
 export type ChainControllerOptions = {
     rpcUrl: string;

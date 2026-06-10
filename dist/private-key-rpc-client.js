@@ -1,4 +1,4 @@
-import { createPublicClient, createWalletClient, hexToString, http, isAddress, } from 'viem';
+import { createPublicClient, createWalletClient, http, isAddress, } from 'viem';
 import { privateKeyToAccount } from 'viem/accounts';
 import { sepolia } from 'viem/chains';
 const normalizePrivateKey = (privateKey) => {
@@ -6,17 +6,12 @@ const normalizePrivateKey = (privateKey) => {
     return trimmed.startsWith('0x') ? trimmed : `0x${trimmed}`;
 };
 const asHex = (value) => typeof value === 'string' && value.startsWith('0x') ? value : undefined;
+// Hex payloads must be signed as raw bytes: decoding to UTF-8 first corrupts
+// binary messages (TextDecoder substitutes U+FFFD instead of throwing), and for
+// valid UTF-8 text the EIP-191 digest over the raw bytes is identical anyway.
 const normalizeMessage = (message) => {
     const hex = asHex(message);
-    if (!hex) {
-        return String(message ?? '');
-    }
-    try {
-        return hexToString(hex);
-    }
-    catch {
-        return { raw: hex };
-    }
+    return hex ? { raw: hex } : String(message ?? '');
 };
 const parseParams = (request) => Array.isArray(request.params) ? [...request.params] : [];
 export class PrivateKeyRpcClient {
@@ -44,10 +39,14 @@ export class PrivateKeyRpcClient {
         const params = parseParams(request);
         switch (request.method) {
             case 'personal_sign': {
+                // Standard order is [message, address]; some legacy callers send
+                // [address, message]. When both params are addresses the request is
+                // ambiguous, so prefer the standard order and treat the first as the
+                // message.
                 const [first, second] = params;
-                const message = typeof first === 'string' && isAddress(first) && second !== undefined
-                    ? second
-                    : first;
+                const firstIsAddress = typeof first === 'string' && isAddress(first);
+                const secondIsAddress = typeof second === 'string' && isAddress(second);
+                const message = firstIsAddress && !secondIsAddress && second !== undefined ? second : first;
                 return this.walletClient.signMessage({
                     account: this.account,
                     message: normalizeMessage(message),
@@ -60,6 +59,9 @@ export class PrivateKeyRpcClient {
                     message: normalizeMessage(message),
                 });
             }
+            // v3 payloads (no arrays or recursive structs) hash identically under
+            // v4 rules, so both versions share the same signing path.
+            case 'eth_signTypedData_v3':
             case 'eth_signTypedData_v4': {
                 const [, typedData] = params;
                 const parsed = typeof typedData === 'string'
@@ -73,6 +75,8 @@ export class PrivateKeyRpcClient {
                     types: parsed.types,
                 });
             }
+            case 'eth_signTypedData':
+                throw new Error('eth_signTypedData (legacy v1) is not supported by PrivateKeyRpcClient. Use eth_signTypedData_v4.');
             case 'eth_sendTransaction': {
                 const [transaction] = params;
                 if (!transaction) {

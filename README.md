@@ -8,12 +8,12 @@ The injected fixtures test dApp behavior with a programmable EIP-1193 provider. 
 
 - Playwright fixtures that start one Anvil node per worker for parallel-safe local EVM tests.
 - Automatic `evm_snapshot` and `evm_revert` around every wallet test.
-- A programmable `MockWalletController` for approval, rejection, disconnects, account changes, and network-change events.
-- EIP-6963 provider announcements for wallet selector testing.
+- A programmable `MockWalletController` for approval, rejection, pending-approval holds, disconnects, account changes, and network-change events, with transaction recording (`sentTransactions`, `waitForNextTransaction`).
+- EIP-6963 provider announcements (one distinct provider object per wallet) for wallet selector testing.
 - Viem-backed chain helpers for impersonation, balance setup, time travel, and block mining.
-- Optional live-chain fixtures for controlled Sepolia QA with a runtime-only private key.
-- Real MetaMask launch, profile resolution, unlock/import, dapp connection, signature confirmation, transaction confirmation, and token approval helpers.
-- Fjord v4 QA specs and reports that document the current state of `https://v4.fjordfoundry.com`.
+- Optional live-chain fixtures for controlled testnet QA with a runtime-only private key (`createLiveFixtures` for custom chains/env names).
+- Real MetaMask mode: pinned-version extension download (`prepareMetaMaskExtension`), one-time onboarding into a cached profile with disposable per-test clones (`buildWalletProfile`/`cloneWalletProfile`), Playwright fixtures (`@marigoldlabs/web3-tester/real-wallet-fixtures`), wallet-side network add/switch, dapp connection, signature/transaction confirmation and rejection, and token approval helpers — validated end to end by an opt-in smoke suite against the pinned MetaMask build.
+- Fjord v4 QA specs (separate `fjord` Playwright project) documenting the current state of `https://v4.fjordfoundry.com`.
 
 ## Install In A Consumer App
 
@@ -41,7 +41,25 @@ test('user can submit a wallet transaction', async ({ page, wallet }) => {
 });
 ```
 
-For live Sepolia tests, import the live fixture instead:
+> Note: fixtures are lazy. The provider is only injected when a test
+> references the `wallet` fixture — a test that destructures only `page`
+> will have no `window.ethereum`.
+
+Testing pending-approval UI and rejection paths:
+
+```ts
+test('shows a pending state until the user confirms', async ({ page, wallet }) => {
+  const held = wallet.holdNextRequest('eth_sendTransaction');
+  await page.getByRole('button', { name: /swap/i }).click();
+  await expect(page.getByText(/confirm in your wallet/i)).toBeVisible();
+
+  (await held).approve();
+  await expect(page.getByText(/success/i)).toBeVisible();
+});
+```
+
+For live testnet tests, import the live fixture (Sepolia by default; use
+`createLiveFixtures({ chain })` for other chains):
 
 ```ts
 import { expect, test } from '@marigoldlabs/web3-tester/live-fixtures';
@@ -53,22 +71,49 @@ test('signs in through SIWE on Sepolia', async ({ page, wallet }) => {
 });
 ```
 
-For fully in-UI real wallet tests, launch MetaMask through the package:
+For fully in-UI real wallet tests, use the real-wallet fixtures. The pinned
+MetaMask build is downloaded automatically, onboarding runs once into a
+cached profile, and every test gets a disposable clone of that profile:
+
+```ts
+import { expect, test } from '@marigoldlabs/web3-tester/real-wallet-fixtures';
+
+test.use({
+  realWalletOptions: {
+    setup: { seedPhrase: process.env.WEB3_TESTER_REAL_WALLET_SECRET_RECOVERY_PHRASE },
+    baseURL: 'https://app.example.com',
+  },
+});
+
+test('confirms a real MetaMask transaction', async ({ page, realWallet }) => {
+  await realWallet.addNetwork({
+    name: 'Anvil Local',
+    rpcUrl: 'http://127.0.0.1:8645',
+    chainId: 31337,
+    symbol: 'ETH',
+  });
+  await realWallet.switchNetwork('Anvil Local');
+
+  await page.goto('/');
+  await page.getByRole('button', { name: /connect/i }).click();
+  await realWallet.connectToDapp();
+
+  await page.getByRole('button', { name: /swap/i }).click();
+  await realWallet.confirmTransaction();
+});
+```
+
+The imperative API remains available for custom setups (preconfigured
+profiles, attaching to a real Chrome profile):
 
 ```ts
 import { launchRealWallet } from '@marigoldlabs/web3-tester/real-wallet';
+import { prepareMetaMaskExtension } from '@marigoldlabs/web3-tester/metamask-extension';
 
 const wallet = await launchRealWallet({
-  baseURL: 'https://v4.fjordfoundry.com',
-  expectedAddress: process.env.FJORD_REAL_WALLET_ADDRESS,
-  extensionPath: process.env.FJORD_REAL_WALLET_EXTENSION_PATH as string,
-  profileDir: process.env.FJORD_REAL_WALLET_PROFILE_DIR as string,
-  setup: process.env.FJORD_REAL_WALLET_PASSWORD || process.env.FJORD_REAL_WALLET_SECRET_RECOVERY_PHRASE
-    ? {
-        password: process.env.FJORD_REAL_WALLET_PASSWORD,
-        seedPhrase: process.env.FJORD_REAL_WALLET_SECRET_RECOVERY_PHRASE,
-      }
-    : undefined,
+  extensionPath: await prepareMetaMaskExtension(),
+  profileDir: process.env.WEB3_TESTER_REAL_WALLET_PROFILE_DIR as string,
+  setup: { seedPhrase: process.env.WEB3_TESTER_REAL_WALLET_SECRET_RECOVERY_PHRASE },
 });
 
 await wallet.connectToDapp();
@@ -77,6 +122,13 @@ await wallet.confirmTransaction();
 await wallet.close();
 ```
 
+MetaMask version pinning: selectors are maintained against
+`DEFAULT_METAMASK_VERSION` (currently 12.23.1) and validated by the opt-in
+smoke suite (`WEB3_TESTER_REAL_WALLET_SMOKE=true npm test`). Override with
+`WEB3_TESTER_METAMASK_VERSION` at your own risk. MetaMask 13.x cannot be used
+for fresh-profile onboarding (its social-login onboarding does not complete
+under automation); it works with a preconfigured persistent profile.
+
 ## Local Development
 
 ```bash
@@ -84,7 +136,9 @@ npm install
 npx playwright install chromium
 npm run typecheck
 npm run build
-npm test
+npm test          # hermetic library tests (needs anvil)
+npm run test:fjord  # opt-in Fjord v4 QA suite (needs DAPP_URL access + env gates)
+WEB3_TESTER_REAL_WALLET_SMOKE=true npm test  # opt-in real-MetaMask smoke suite
 ```
 
 Foundry's `anvil` executable must be available on `PATH`, or set `ANVIL_EXECUTABLE`.
@@ -117,26 +171,24 @@ Copy `.env.example` for local reference. Do not commit real private keys.
 
 | Variable | Default | Purpose |
 | --- | --- | --- |
-| `DAPP_URL` | `https://v4.fjordfoundry.com` | Playwright base URL for app tests. |
 | `ANVIL_EXECUTABLE` | `anvil` | Path to the Anvil binary. |
 | `ANVIL_RUNTIME` | `binary` | Set to `docker` to run Anvil through Docker Desktop. |
 | `ANVIL_DOCKER_IMAGE` | `ghcr.io/foundry-rs/foundry:latest` | Docker image used when `ANVIL_RUNTIME=docker`. |
 | `ANVIL_HOST` | `127.0.0.1` | Host for worker Anvil RPC endpoints. |
-| `ANVIL_PORT` | `8545` | Base port. Playwright worker index is added for isolation. |
+| `ANVIL_PORT` | `8645` | Base port (worker index is added for isolation). Defaults off 8545 so a developer-run dev node never collides. |
 | `ANVIL_CHAIN_ID` | `31337` | Chain ID exposed by local Anvil and the injected provider. |
 | `ANVIL_FORK_URL` | unset | Optional fork RPC URL. |
 | `ANVIL_SILENT` | `true` | Set to `false` to stream Anvil logs. |
-| `FJORD_PRIVATE_KEY` | unset | Runtime-only private key for live Sepolia QA. |
-| `SEPOLIA_RPC_URL` | Viem default | Optional Sepolia RPC URL for live tests. |
-| `FJORD_RUN_TRANSACTIONS` | unset | Must be `true` to run live transaction-spending tests. |
-| `FJORD_MUTATE_STATE` | unset | Must be `true` to deploy QA tokens or create sale drafts. |
-| `FJORD_PUBLISH_SALES` | unset | Must be `true` to attempt live sale publishing. |
-| `FJORD_ADMIN_MUTATE` | unset | Must be `true` to attempt admin mutation tests. |
-| `FJORD_REAL_WALLET_EXTENSION_PATH` | unset | Path to the unpacked MetaMask extension for real-wallet tests. |
-| `FJORD_REAL_WALLET_PROFILE_DIR` | unset | Persistent Chromium user-data directory, or a Chrome profile directory such as `Profile 1`. |
-| `FJORD_REAL_WALLET_ADDRESS` | unset | Optional expected account address checked after unlock/import. |
-| `FJORD_REAL_WALLET_PASSWORD` | unset | Optional MetaMask password used to unlock the profile. When importing from a seed without a password, web3-tester uses a deterministic test profile password. |
-| `FJORD_REAL_WALLET_SECRET_RECOVERY_PHRASE` | unset | Optional seed phrase used when MetaMask opens on onboarding. |
+| `WEB3_TESTER_PRIVATE_KEY` | unset | Runtime-only private key for live-chain fixtures (`FJORD_PRIVATE_KEY` still honored as a legacy alias). |
+| `WEB3_TESTER_RPC_URL` | Viem default | Optional RPC URL for live fixtures (`SEPOLIA_RPC_URL` legacy alias). |
+| `WEB3_TESTER_METAMASK_VERSION` | pinned default | MetaMask release downloaded by `prepareMetaMaskExtension`. |
+| `WEB3_TESTER_REAL_WALLET_EXTENSION_PATH` | auto-download | Path to an unpacked MetaMask extension (skips the download). |
+| `WEB3_TESTER_REAL_WALLET_PROFILE_DIR` | profile cache | Explicit persistent Chromium user-data directory, or a Chrome profile directory such as `Profile 1`. Disables the per-test profile cache. |
+| `WEB3_TESTER_REAL_WALLET_PASSWORD` | deterministic test password | MetaMask password used to unlock profiles. |
+| `WEB3_TESTER_REAL_WALLET_SECRET_RECOVERY_PHRASE` | unset | Seed phrase used to build the cached real-wallet profile. |
+| `WEB3_TESTER_REAL_WALLET_SMOKE` | unset | Set `true` to run the real-MetaMask smoke suite. |
+| `DAPP_URL` | `https://v4.fjordfoundry.com` | Base URL for the Fjord QA project. |
+| `FJORD_*` gates | unset | Fjord QA mutation gates — see `docs/FJORD_LIVE_QA.md`. |
 
 ## Package Surface
 
@@ -146,6 +198,8 @@ The installable package exports:
 - `@marigoldlabs/web3-tester/fixtures`
 - `@marigoldlabs/web3-tester/live-fixtures`
 - `@marigoldlabs/web3-tester/real-wallet`
+- `@marigoldlabs/web3-tester/real-wallet-fixtures`
+- `@marigoldlabs/web3-tester/metamask-extension`
 - `@marigoldlabs/web3-tester/anvil`
 - `@marigoldlabs/web3-tester/mock-wallet-controller`
 - `@marigoldlabs/web3-tester/private-key-rpc-client`
@@ -169,7 +223,20 @@ await wallet.disconnect();
 await wallet.reconnect();
 await wallet.setAccounts(['0x0000000000000000000000000000000000000001']);
 await wallet.switchNetwork(11155111);
+
+// Pending-approval simulation and transaction assertions:
+const held = wallet.holdNextRequest('personal_sign');
+// ... trigger the dapp action, assert the pending UI ...
+(await held).reject('User changed their mind.');
+
+const txPromise = wallet.waitForNextTransaction();
+// ... trigger the dapp action ...
+const hash = await txPromise;
 ```
+
+Dapp-initiated `wallet_switchEthereumChain` follows MetaMask semantics: it
+throws 4902 for chains the wallet does not know; chains become known via
+`wallet_addEthereumChain` or a test-driven `wallet.switchNetwork(...)`.
 
 ## Multiple Wallet Selectors
 
@@ -190,11 +257,11 @@ test.use({
 | Path | Purpose |
 | --- | --- |
 | `src/` | Reusable package source. |
-| `tests/provider-injection.spec.ts` | Harness self-tests. |
-| `tests/fjord*.spec.ts` | Fjord v4 public, live, and mutation QA specs. |
+| `tests/` (library project) | Hermetic harness self-tests: `anvil`, `mock-wallet`, `private-key-rpc-client`, `provider-injection`, `real-wallet`, `real-wallet-smoke` (opt-in). |
+| `tests/fjord*.spec.ts` (fjord project) | Fjord v4 public, live, and mutation QA specs (`npm run test:fjord`). |
 | `docs/` | Dependency, API, architecture, and Fjord QA documentation. |
 | `examples/` | Copyable consumer-app snippets. |
-| `reports/` | Current Fjord v4 QA reports. |
+| `reports/` | Fjord v4 QA reports and library review reports. |
 
 ## Safety Model
 

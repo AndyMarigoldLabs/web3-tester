@@ -4,7 +4,9 @@ import { join } from 'node:path';
 import { foundry } from 'viem/chains';
 import { AnvilInstance, ChainController } from './anvil.js';
 import { MockWalletController } from './mock-wallet-controller.js';
-const workerPort = (workerIndex) => Number(process.env.ANVIL_PORT ?? 8545) + workerIndex;
+// Base defaults to 8645 rather than anvil's own 8545 so the fixture never
+// collides with a developer-run dev node on the conventional port.
+const workerPort = (workerIndex) => Number(process.env.ANVIL_PORT ?? 8645) + workerIndex;
 const resolveAnvilExecutable = () => {
     if (process.env.ANVIL_EXECUTABLE) {
         return process.env.ANVIL_EXECUTABLE;

@@ -22,7 +22,17 @@ export type RealWalletLaunchOptions = {
     setup?: RealWalletSetup;
     slowMo?: number;
 };
+export type RealWalletNetwork = {
+    name: string;
+    rpcUrl: string;
+    chainId: number;
+    symbol: string;
+    blockExplorerUrl?: string;
+};
 export type RealWalletController = {
+    addNetwork(network: RealWalletNetwork): Promise<void>;
+    approveNewNetwork(): Promise<void>;
+    approveSwitchNetwork(): Promise<void>;
     approveTokenPermission(options?: {
         gasSetting?: RealWalletGasSettings;
         spendLimit?: 'max' | number;
@@ -33,25 +43,16 @@ export type RealWalletController = {
     }): Promise<void>;
     connectToDapp(accounts?: string[]): Promise<void>;
     getAccountAddress(): Promise<string>;
+    rejectNewNetwork(): Promise<void>;
     rejectSignature(): Promise<void>;
+    rejectSwitchNetwork(): Promise<void>;
     rejectTransaction(): Promise<void>;
+    switchNetwork(name: string): Promise<void>;
 };
-export type RealWalletSession = {
-    approveTokenPermission(options?: {
-        gasSetting?: RealWalletGasSettings;
-        spendLimit?: 'max' | number;
-    }): Promise<void>;
+export type RealWalletSession = RealWalletController & {
     close(): Promise<void>;
-    confirmSignature(): Promise<void>;
-    confirmTransaction(options?: {
-        gasSetting?: RealWalletGasSettings;
-    }): Promise<void>;
-    connectToDapp(accounts?: string[]): Promise<void>;
     context: BrowserContext;
     extensionId: string;
-    getAccountAddress(): Promise<string>;
-    rejectSignature(): Promise<void>;
-    rejectTransaction(): Promise<void>;
     wallet: RealWalletController;
 };
 export declare function resolveRealWalletProfile(profileDir: string): RealWalletProfile;
