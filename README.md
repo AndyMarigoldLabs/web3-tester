@@ -1,8 +1,8 @@
 # Web3 Tester
 
-`@andy-marigold-labs/web3-tester` is a Playwright, Anvil, and Viem harness for deterministic Web3 end-to-end tests without a browser wallet extension.
+`@marigoldlabs/web3-tester` is a Playwright, Anvil, Viem, and MetaMask harness for Web3 end-to-end tests.
 
-The core rule is simple: test the dApp, not MetaMask's popup UI. The harness injects a standards-shaped EIP-1193 provider before application scripts run, bridges wallet RPC calls back to the Playwright process, and sends chain operations directly to Anvil or to an explicit live-chain signer.
+The injected fixtures test dApp behavior with a programmable EIP-1193 provider. The real-wallet adapter launches a persistent Chromium profile with MetaMask, imports or unlocks the profile when configured, and exposes wallet-side actions so consumer apps do not carry extension automation code.
 
 ## What It Provides
 
@@ -12,6 +12,7 @@ The core rule is simple: test the dApp, not MetaMask's popup UI. The harness inj
 - EIP-6963 provider announcements for wallet selector testing.
 - Viem-backed chain helpers for impersonation, balance setup, time travel, and block mining.
 - Optional live-chain fixtures for controlled Sepolia QA with a runtime-only private key.
+- Real MetaMask launch, profile resolution, unlock/import, dapp connection, signature confirmation, transaction confirmation, and token approval helpers.
 - Fjord v4 QA specs and reports that document the current state of `https://v4.fjordfoundry.com`.
 
 ## Install In A Consumer App
@@ -19,13 +20,13 @@ The core rule is simple: test the dApp, not MetaMask's popup UI. The harness inj
 From the Fjord v4 package, install this repo as a dev dependency:
 
 ```bash
-npm install --save-dev github:AndyMarigoldLabs/web3-tester
+npm install --save-dev @marigoldlabs/web3-tester
 ```
 
 Then import the local deterministic fixture:
 
 ```ts
-import { expect, test } from '@andy-marigold-labs/web3-tester/fixtures';
+import { expect, test } from '@marigoldlabs/web3-tester/fixtures';
 
 test('user can submit a wallet transaction', async ({ page, wallet }) => {
   await page.goto('/swap');
@@ -43,13 +44,37 @@ test('user can submit a wallet transaction', async ({ page, wallet }) => {
 For live Sepolia tests, import the live fixture instead:
 
 ```ts
-import { expect, test } from '@andy-marigold-labs/web3-tester/live-fixtures';
+import { expect, test } from '@marigoldlabs/web3-tester/live-fixtures';
 
 test('signs in through SIWE on Sepolia', async ({ page, wallet }) => {
   await page.goto('/');
   await page.getByRole('button', { name: /connect/i }).click();
   await expect(page.getByText(wallet.primaryAccount.slice(0, 6))).toBeVisible();
 });
+```
+
+For fully in-UI real wallet tests, launch MetaMask through the package:
+
+```ts
+import { launchRealWallet } from '@marigoldlabs/web3-tester/real-wallet';
+
+const wallet = await launchRealWallet({
+  baseURL: 'https://v4.fjordfoundry.com',
+  expectedAddress: process.env.FJORD_REAL_WALLET_ADDRESS,
+  extensionPath: process.env.FJORD_REAL_WALLET_EXTENSION_PATH as string,
+  profileDir: process.env.FJORD_REAL_WALLET_PROFILE_DIR as string,
+  setup: process.env.FJORD_REAL_WALLET_PASSWORD || process.env.FJORD_REAL_WALLET_SECRET_RECOVERY_PHRASE
+    ? {
+        password: process.env.FJORD_REAL_WALLET_PASSWORD,
+        seedPhrase: process.env.FJORD_REAL_WALLET_SECRET_RECOVERY_PHRASE,
+      }
+    : undefined,
+});
+
+await wallet.connectToDapp();
+await wallet.confirmSignature();
+await wallet.confirmTransaction();
+await wallet.close();
 ```
 
 ## Local Development
@@ -107,17 +132,23 @@ Copy `.env.example` for local reference. Do not commit real private keys.
 | `FJORD_MUTATE_STATE` | unset | Must be `true` to deploy QA tokens or create sale drafts. |
 | `FJORD_PUBLISH_SALES` | unset | Must be `true` to attempt live sale publishing. |
 | `FJORD_ADMIN_MUTATE` | unset | Must be `true` to attempt admin mutation tests. |
+| `FJORD_REAL_WALLET_EXTENSION_PATH` | unset | Path to the unpacked MetaMask extension for real-wallet tests. |
+| `FJORD_REAL_WALLET_PROFILE_DIR` | unset | Persistent Chromium user-data directory, or a Chrome profile directory such as `Profile 1`. |
+| `FJORD_REAL_WALLET_ADDRESS` | unset | Optional expected account address checked after unlock/import. |
+| `FJORD_REAL_WALLET_PASSWORD` | unset | Optional MetaMask password used to unlock the profile. When importing from a seed without a password, web3-tester uses a deterministic test profile password. |
+| `FJORD_REAL_WALLET_SECRET_RECOVERY_PHRASE` | unset | Optional seed phrase used when MetaMask opens on onboarding. |
 
 ## Package Surface
 
 The installable package exports:
 
-- `@andy-marigold-labs/web3-tester`
-- `@andy-marigold-labs/web3-tester/fixtures`
-- `@andy-marigold-labs/web3-tester/live-fixtures`
-- `@andy-marigold-labs/web3-tester/anvil`
-- `@andy-marigold-labs/web3-tester/mock-wallet-controller`
-- `@andy-marigold-labs/web3-tester/private-key-rpc-client`
+- `@marigoldlabs/web3-tester`
+- `@marigoldlabs/web3-tester/fixtures`
+- `@marigoldlabs/web3-tester/live-fixtures`
+- `@marigoldlabs/web3-tester/real-wallet`
+- `@marigoldlabs/web3-tester/anvil`
+- `@marigoldlabs/web3-tester/mock-wallet-controller`
+- `@marigoldlabs/web3-tester/private-key-rpc-client`
 
 Full API notes are in [docs/API.md](docs/API.md).
 
@@ -169,6 +200,7 @@ test.use({
 
 - Local tests use deterministic Anvil accounts only.
 - Live tests require explicit environment variables and never store private keys in source.
+- Real-wallet tests use a persistent browser profile and keep extension-side automation inside this package.
 - Mutation tests are skipped unless their opt-in flag is set.
 - Published reports redact secrets and record transaction hashes only when useful for auditability.
 

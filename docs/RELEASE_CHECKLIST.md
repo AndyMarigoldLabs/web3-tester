@@ -1,6 +1,6 @@
 # Release Checklist
 
-Use this before pushing a new version or pinning it inside Fjord v4.
+Use this before publishing a new version or pinning it inside Fjord v4.
 
 ## Required
 
@@ -16,13 +16,13 @@ Use this before pushing a new version or pinning it inside Fjord v4.
 From a clean consumer repo:
 
 ```bash
-npm install --save-dev github:AndyMarigoldLabs/web3-tester#<commit-sha>
+npm install --save-dev @marigoldlabs/web3-tester@<version>
 ```
 
 Then import:
 
 ```ts
-import { expect, test } from '@andy-marigold-labs/web3-tester/fixtures';
+import { expect, test } from '@marigoldlabs/web3-tester/fixtures';
 ```
 
 Run one provider smoke test.
@@ -46,4 +46,10 @@ git status --short
 git add .
 git commit -m "Document and package Web3 tester"
 git push -u origin main
+```
+
+## Publish
+
+```bash
+npm publish --access public
 ```
