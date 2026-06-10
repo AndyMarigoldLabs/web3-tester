@@ -1,4 +1,4 @@
-import { expect, test } from '@andy-marigold-labs/web3-tester/live-fixtures';
+import { expect, test } from '@marigoldlabs/web3-tester/live-fixtures';
 
 test.skip(!process.env.FJORD_PRIVATE_KEY, 'FJORD_PRIVATE_KEY is required for live Sepolia tests.');
 

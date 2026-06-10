@@ -1,4 +1,4 @@
-import { expect, test } from '@andy-marigold-labs/web3-tester/fixtures';
+import { expect, test } from '@marigoldlabs/web3-tester/fixtures';
 
 type EthereumProvider = {
   request: (args: { method: string; params?: unknown[] }) => Promise<unknown>;

@@ -1,10 +1,11 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { chromium } from '@playwright/test';
+import { passwordForSetup } from './real-wallet-setup.js';
 const DEFAULT_EXTENSION_NAME = 'MetaMask';
 const DEFAULT_TIMEOUT_MS = 30_000;
-const DEFAULT_WALLET_PASSWORD = 'web3-tester-wallet';
 const SHORT_TIMEOUT_MS = 2_000;
+const LOCATOR_PROBE_MS = 250;
 const testId = (id) => `[data-testid="${id}"]`;
 function extensionUrl(extensionId, page = 'home.html') {
     return `chrome-extension://${extensionId}/${page}`;
@@ -30,36 +31,174 @@ async function isHidden(locator, timeout = SHORT_TIMEOUT_MS) {
     await locator.first().waitFor({ state: 'hidden', timeout });
     return true;
 }
-async function clickFirstVisible(locators, timeout = SHORT_TIMEOUT_MS) {
-    for (const locator of locators) {
-        const target = locator.first();
-        if (!(await isVisible(target, timeout).catch(() => false)))
-            continue;
-        await target.click();
-        return true;
-    }
-    return false;
+function wait(ms) {
+    return new Promise((resolve) => {
+        setTimeout(resolve, ms);
+    });
+}
+async function findVisibleLocator(locators, timeout = SHORT_TIMEOUT_MS, options = {}) {
+    const deadline = Date.now() + timeout;
+    do {
+        const remaining = Math.max(deadline - Date.now(), 1);
+        for (const locator of locators) {
+            const target = locator.first();
+            const probeTimeout = Math.min(LOCATOR_PROBE_MS, remaining);
+            if (!(await isVisible(target, probeTimeout).catch(() => false)))
+                continue;
+            if (options.requireEnabled && !(await target.isEnabled({ timeout: 0 }).catch(() => false)))
+                continue;
+            return target;
+        }
+        const delay = Math.min(LOCATOR_PROBE_MS, Math.max(deadline - Date.now(), 0));
+        if (delay > 0)
+            await wait(delay);
+    } while (Date.now() < deadline);
+    return undefined;
+}
+async function clickFirstVisible(locators, timeout = SHORT_TIMEOUT_MS, options = { requireEnabled: true }) {
+    const target = await findVisibleLocator(locators, timeout, {
+        requireEnabled: options.requireEnabled ?? true,
+    });
+    if (!target)
+        return false;
+    await target.click({ force: options.force, timeout });
+    return true;
 }
 async function fillFirstVisible(locators, value, timeout = DEFAULT_TIMEOUT_MS) {
-    for (const locator of locators) {
-        const target = locator.first();
-        if (!(await isVisible(target, timeout).catch(() => false)))
-            continue;
-        await target.fill(value);
-        return true;
+    const target = await findVisibleLocator(locators, timeout);
+    if (!target)
+        return false;
+    await target.fill(value);
+    return true;
+}
+async function startSeedPhraseWordGrid(target, firstWord) {
+    await target.fill(firstWord);
+    await wait(250);
+    await target.press('Space');
+}
+function metaMaskOnboardingLocators(page) {
+    return [
+        page.locator(testId('onboarding-import-wallet')),
+        page.locator(testId('onboarding-import-with-srp-button')),
+        page.locator(testId('onboarding-create-wallet')),
+        page.locator(testId('onboarding-terms-checkbox')),
+        page.locator(testId('srp-input-import__srp-note')),
+        page.locator(testId('import-srp-confirm')),
+        page.locator(testId('create-password-new-input')),
+        page.locator(testId('create-password-confirm-input')),
+        page.getByRole('button', { name: 'I have an existing wallet' }),
+        page.getByRole('button', { name: 'Create a new wallet' }),
+        page.getByRole('button', { name: 'Import using Secret Recovery Phrase' }),
+        page.getByRole('heading', { name: 'Import a wallet' }),
+    ];
+}
+async function isMetaMaskOnboardingVisible(page) {
+    return page.url().includes('/home.html#/onboarding') || Boolean(await findVisibleLocator(metaMaskOnboardingLocators(page), SHORT_TIMEOUT_MS));
+}
+function metaMaskSeedPhraseInputLocators(page) {
+    return [
+        page.locator(testId('srp-input-import__srp-note')),
+        page.locator('#first-word-input-text-area'),
+        page.locator('textarea[name="seedPhrase"]'),
+        page.locator('textarea').first(),
+    ];
+}
+function metaMaskSeedPhraseImportLocators(page) {
+    return [
+        ...metaMaskSeedPhraseInputLocators(page),
+        page.getByRole('heading', { name: 'Import a wallet' }),
+    ];
+}
+function metaMaskSeedPhraseWordInputs(page) {
+    return page.locator('.srp-input-import__words-list input, input[id^="import-srp__srp-word-"], input[data-testid^="import-srp__srp-word-"], input[name^="srp-word-"]');
+}
+async function isSeedPhraseConfirmEnabled(page, timeout = SHORT_TIMEOUT_MS) {
+    return Boolean(await findVisibleLocator([page.locator(testId('import-srp-confirm'))], timeout, {
+        requireEnabled: true,
+    }));
+}
+async function fillMetaMaskSeedPhraseWordGrid(page, words, startIndex = 0) {
+    const wordInputs = metaMaskSeedPhraseWordInputs(page);
+    for (let index = startIndex; index < words.length; index += 1) {
+        const input = wordInputs.nth(index);
+        await input.waitFor({ state: 'visible', timeout: DEFAULT_TIMEOUT_MS });
+        await input.fill(words[index]);
+        if (index < words.length - 1) {
+            await input.press('Space');
+            await wait(100);
+        }
     }
-    return false;
+}
+async function isMetaMaskSeedPhraseImportVisible(page) {
+    return (page.url().includes('/onboarding/import-with-recovery-phrase') ||
+        Boolean(await findVisibleLocator(metaMaskSeedPhraseImportLocators(page), SHORT_TIMEOUT_MS)));
+}
+async function isMetaMaskCreatePasswordVisible(page) {
+    return (page.url().includes('/onboarding/create-password') ||
+        Boolean(await findVisibleLocator([page.locator(testId('create-password-new-input')), page.locator('input[type="password"]').nth(0)], SHORT_TIMEOUT_MS)));
 }
 async function waitForMetaMaskReady(page) {
     await page.waitForLoadState('domcontentloaded', { timeout: DEFAULT_TIMEOUT_MS }).catch(() => undefined);
     await isHidden(page.locator('.spinner, .loading-overlay, [data-testid="loading-overlay"]'), DEFAULT_TIMEOUT_MS).catch(() => undefined);
 }
+function metaMaskUnlockPasswordLocators(page) {
+    return [page.locator(testId('unlock-password')), page.locator('input[type="password"]').first()];
+}
+function metaMaskUnlockSubmitLocators(page) {
+    return [page.locator(testId('unlock-submit')), page.getByRole('button', { name: 'Unlock' })];
+}
+async function isMetaMaskUnlockVisible(page) {
+    return Boolean(await findVisibleLocator(metaMaskUnlockPasswordLocators(page), SHORT_TIMEOUT_MS));
+}
 async function closeMetaMaskOverlay(page) {
     await clickFirstVisible([
         page.locator(testId('popover-close')),
         page.locator('.mm-modal-content .mm-modal-header button').first(),
-        page.getByRole('button', { name: 'Close' }),
-    ], SHORT_TIMEOUT_MS);
+    ], SHORT_TIMEOUT_MS).catch(() => false);
+}
+function metaMaskAccountMenuLocators(page) {
+    return [
+        page.locator(testId('account-options-menu-button')),
+        page.locator(testId('account-menu-icon')),
+        page.getByRole('button', { name: /Account options|Account menu/i }),
+    ];
+}
+function metaMaskPromptActions(page) {
+    return [
+        page.locator(testId('onboarding-complete-done')),
+        page.locator(testId('metametrics-no-thanks')),
+        page.getByRole('button', { name: 'No thanks' }),
+        page.getByRole('button', { name: 'Done' }),
+        page.getByRole('button', { name: 'Skip' }),
+        page.getByRole('button', { name: 'Continue' }),
+        page.getByRole('button', { name: 'Open wallet' }),
+        page.getByRole('button', { name: 'Maybe later' }),
+        page.getByRole('link', { name: 'Maybe later' }),
+    ];
+}
+function metaMaskTextPromptActions(page) {
+    return [
+        page.getByText('Maybe later', { exact: true }),
+        page.getByText('No thanks', { exact: true }),
+    ];
+}
+async function clickMetaMaskPromptAction(page, timeout = SHORT_TIMEOUT_MS) {
+    return ((await clickFirstVisible(metaMaskPromptActions(page), timeout)) ||
+        (await clickFirstVisible(metaMaskTextPromptActions(page), timeout, { requireEnabled: false })));
+}
+async function waitForMetaMaskHome(page, timeout = DEFAULT_TIMEOUT_MS) {
+    const deadline = Date.now() + timeout;
+    do {
+        await waitForMetaMaskReady(page);
+        if (await findVisibleLocator(metaMaskAccountMenuLocators(page), SHORT_TIMEOUT_MS))
+            return true;
+        if (await clickMetaMaskPromptAction(page, SHORT_TIMEOUT_MS))
+            continue;
+        const delay = Math.min(LOCATOR_PROBE_MS, Math.max(deadline - Date.now(), 0));
+        if (delay > 0)
+            await wait(delay);
+    } while (Date.now() < deadline);
+    return Boolean(await findVisibleLocator(metaMaskAccountMenuLocators(page), SHORT_TIMEOUT_MS));
 }
 async function discoverExtensionIdFromRuntime(context) {
     const workerId = context.serviceWorkers().map((worker) => extensionIdFromUrl(worker.url())).find(Boolean);
@@ -114,7 +253,7 @@ async function openExtensionHome(context, extensionId) {
     const homeUrl = extensionUrl(extensionId);
     const existing = context.pages().find((page) => page.url().startsWith(homeUrl));
     const page = existing ?? (await context.newPage());
-    if (!page.url().startsWith(homeUrl))
+    if (page.url() !== homeUrl)
         await page.goto(homeUrl);
     await waitForMetaMaskReady(page);
     return page;
@@ -122,35 +261,86 @@ async function openExtensionHome(context, extensionId) {
 function notificationUrlPrefix(extensionId) {
     return extensionUrl(extensionId, 'notification.html');
 }
+function extensionPageUrlPrefix(extensionId) {
+    return `chrome-extension://${extensionId}/`;
+}
+function metaMaskActionContentLocators(page) {
+    return [
+        page.getByRole('heading', {
+            name: /Spending cap request|Transaction request|Signature request|Sign-in request|Permission request/i,
+        }),
+        page.getByText(/Spending cap request|Transaction request|Signature request|Sign-in request|Permission request|This site wants permission/i),
+    ];
+}
+function metaMaskActionControlLocators(page) {
+    return [
+        page.locator(testId('confirm-footer-button')),
+        page.locator(testId('confirmation-submit-button')),
+        page.locator(testId('page-container-footer-next')),
+        page.locator(testId('request-signature__sign')),
+        page.locator(testId('signature-sign-button')),
+        page.locator(testId('custom-spending-cap-input')),
+        page.locator('.set-approval-for-all-warning__footer__approve-button'),
+        page.getByRole('button', { name: /^(Confirm|Connect|Next|Approve|Sign)$/i }),
+    ];
+}
+function metaMaskActionLocators(page) {
+    return [...metaMaskActionContentLocators(page), ...metaMaskActionControlLocators(page)];
+}
+async function findMetaMaskActionPage(context, extensionId) {
+    const extensionPrefix = extensionPageUrlPrefix(extensionId);
+    let controlOnlyPage;
+    for (const page of [...context.pages()].reverse()) {
+        if (page.isClosed() || !page.url().startsWith(extensionPrefix))
+            continue;
+        await page.waitForLoadState('domcontentloaded', { timeout: LOCATOR_PROBE_MS }).catch(() => undefined);
+        if (await findVisibleLocator(metaMaskActionContentLocators(page), LOCATOR_PROBE_MS, { requireEnabled: false })) {
+            return page;
+        }
+        if (!controlOnlyPage &&
+            (await findVisibleLocator(metaMaskActionControlLocators(page), LOCATOR_PROBE_MS, { requireEnabled: false }))) {
+            controlOnlyPage = page;
+        }
+    }
+    return controlOnlyPage;
+}
+async function findMetaMaskLockedPage(context, extensionId) {
+    const extensionPrefix = extensionPageUrlPrefix(extensionId);
+    for (const page of [...context.pages()].reverse()) {
+        if (page.isClosed() || !page.url().startsWith(extensionPrefix))
+            continue;
+        await page.waitForLoadState('domcontentloaded', { timeout: LOCATOR_PROBE_MS }).catch(() => undefined);
+        if (await isMetaMaskUnlockVisible(page))
+            return page;
+    }
+    return undefined;
+}
+function findMetaMaskNotificationPage(context, extensionId) {
+    const notificationPrefix = notificationUrlPrefix(extensionId);
+    return [...context.pages()]
+        .reverse()
+        .find((page) => !page.isClosed() && page.url().startsWith(notificationPrefix));
+}
 async function getNotificationPage(context, extensionId, timeout = DEFAULT_TIMEOUT_MS) {
     const prefix = notificationUrlPrefix(extensionId);
+    const extensionPrefix = extensionPageUrlPrefix(extensionId);
     const startedAt = Date.now();
-    let page = context.pages().find((candidate) => candidate.url().startsWith(prefix));
+    let page = await findMetaMaskActionPage(context, extensionId);
+    let notificationPage = findMetaMaskNotificationPage(context, extensionId);
     while (!page && Date.now() - startedAt < timeout) {
-        const pendingPages = context.pages().filter((candidate) => !candidate.isClosed());
-        for (const pendingPage of pendingPages) {
-            await pendingPage
-                .waitForURL((url) => url.href.startsWith(prefix), { timeout: 250 })
-                .catch(() => undefined);
-            if (pendingPage.url().startsWith(prefix)) {
-                page = pendingPage;
-                break;
-            }
-        }
-        if (page)
-            break;
         const remaining = Math.max(timeout - (Date.now() - startedAt), 1_000);
         const candidate = await context.waitForEvent('page', { timeout: Math.min(remaining, 1_000) }).catch(() => undefined);
-        if (!candidate) {
-            page = context.pages().find((openPage) => openPage.url().startsWith(prefix));
-            continue;
+        if (candidate) {
+            await candidate
+                .waitForURL((url) => url.href.startsWith(prefix) || url.href.startsWith(extensionPrefix), {
+                timeout: Math.min(remaining, 5_000),
+            })
+                .catch(() => undefined);
         }
-        await candidate
-            .waitForURL((url) => url.href.startsWith(prefix), { timeout: Math.min(remaining, 5_000) })
-            .catch(() => undefined);
-        if (candidate.url().startsWith(prefix))
-            page = candidate;
+        page = await findMetaMaskActionPage(context, extensionId);
+        notificationPage = findMetaMaskNotificationPage(context, extensionId) ?? notificationPage;
     }
+    page ??= notificationPage;
     if (!page)
         throw new Error('Timed out waiting for MetaMask notification window.');
     await waitForMetaMaskReady(page);
@@ -160,25 +350,38 @@ async function getNotificationPage(context, extensionId, timeout = DEFAULT_TIMEO
 function shortAddress(address) {
     return `${address.slice(0, 6)}...${address.slice(-4)}`.toLowerCase();
 }
-function passwordForSetup(setup) {
-    return setup?.password ?? (setup?.seedPhrase ? DEFAULT_WALLET_PASSWORD : undefined);
+async function pageContainsAddress(page, address) {
+    const normalizedAddress = address.toLowerCase();
+    const text = ((await page.locator('body').textContent({ timeout: SHORT_TIMEOUT_MS }).catch(() => '')) ?? '')
+        .replace(/\s+/g, '')
+        .toLowerCase();
+    return (text.includes(normalizedAddress) ||
+        (text.includes(normalizedAddress.slice(0, 6)) && text.includes(normalizedAddress.slice(-4))) ||
+        (text.includes(normalizedAddress.slice(0, 7)) && text.includes(normalizedAddress.slice(-5))));
 }
 async function fillSeedPhrase(page, seedPhrase) {
     const words = seedPhrase.trim().split(/\s+/);
     if (words.length < 12) {
         throw new Error('setup.seedPhrase must contain at least 12 words.');
     }
-    const singleInputFilled = await fillFirstVisible([
-        page.locator(testId('srp-input-import__srp-note')),
-        page.locator('textarea[name="seedPhrase"]'),
-        page.locator('textarea').first(),
-    ], words.join(' '), SHORT_TIMEOUT_MS);
-    if (singleInputFilled)
-        return;
-    const wordInputs = page.locator('input[id^="import-srp__srp-word-"], input[data-testid^="import-srp__srp-word-"]');
+    const singleInput = await findVisibleLocator(metaMaskSeedPhraseInputLocators(page), DEFAULT_TIMEOUT_MS);
+    if (singleInput) {
+        await startSeedPhraseWordGrid(singleInput, words[0]);
+        await fillMetaMaskSeedPhraseWordGrid(page, words, 1);
+        if (await isSeedPhraseConfirmEnabled(page)) {
+            return;
+        }
+    }
+    const wordInputs = metaMaskSeedPhraseWordInputs(page);
     if ((await wordInputs.count()) >= words.length) {
+        await fillMetaMaskSeedPhraseWordGrid(page, words);
+        if (await isSeedPhraseConfirmEnabled(page))
+            return;
+    }
+    const textboxes = page.getByRole('textbox');
+    if ((await textboxes.count()) >= words.length) {
         for (const [index, word] of words.entries()) {
-            await wordInputs.nth(index).fill(word);
+            await textboxes.nth(index).fill(word);
         }
         return;
     }
@@ -194,28 +397,38 @@ async function importMetaMaskWallet(page, setup) {
     if (await isVisible(terms, SHORT_TIMEOUT_MS).catch(() => false)) {
         await terms.check();
     }
-    const importStarted = await clickFirstVisible([
-        page.locator(testId('onboarding-import-wallet')),
-        page.locator(testId('onboarding-import-with-srp-button')),
-        page.getByRole('button', { name: 'Import an existing wallet' }),
-        page.getByRole('button', { name: 'Import wallet' }),
-    ], DEFAULT_TIMEOUT_MS);
-    if (!importStarted)
-        throw new Error('Unable to start MetaMask wallet import flow.');
-    await clickFirstVisible([
-        page.locator(testId('metametrics-no-thanks')),
-        page.locator(testId('metametrics-i-agree')),
-        page.getByRole('button', { name: 'No thanks' }),
-        page.getByRole('button', { name: 'I agree' }),
-    ], SHORT_TIMEOUT_MS);
-    await fillSeedPhrase(page, setup.seedPhrase);
-    const seedConfirmed = await clickFirstVisible([
-        page.locator(testId('import-srp-confirm')),
-        page.getByRole('button', { name: 'Confirm Secret Recovery Phrase' }),
-        page.getByRole('button', { name: 'Confirm' }),
-    ], DEFAULT_TIMEOUT_MS);
-    if (!seedConfirmed)
-        throw new Error('Unable to confirm MetaMask seed phrase import.');
+    if (!(await isMetaMaskSeedPhraseImportVisible(page)) && !(await isMetaMaskCreatePasswordVisible(page))) {
+        const importStarted = await clickFirstVisible([
+            page.locator(testId('onboarding-import-wallet')),
+            page.locator(testId('onboarding-import-with-srp-button')),
+            page.getByRole('button', { name: 'I have an existing wallet' }),
+            page.getByRole('button', { name: 'Import an existing wallet' }),
+            page.getByRole('button', { name: 'Import wallet' }),
+        ], DEFAULT_TIMEOUT_MS);
+        if (!importStarted)
+            throw new Error('Unable to start MetaMask wallet import flow.');
+        await waitForMetaMaskReady(page);
+        await clickFirstVisible([
+            page.locator(testId('onboarding-import-with-srp-button')),
+            page.getByRole('button', { name: 'Import using Secret Recovery Phrase' }),
+        ], 5_000);
+        await clickFirstVisible([
+            page.locator(testId('metametrics-no-thanks')),
+            page.locator(testId('metametrics-i-agree')),
+            page.getByRole('button', { name: 'No thanks' }),
+            page.getByRole('button', { name: 'I agree' }),
+        ], SHORT_TIMEOUT_MS);
+    }
+    if (!(await isMetaMaskCreatePasswordVisible(page))) {
+        await fillSeedPhrase(page, setup.seedPhrase);
+        const seedConfirmed = await clickFirstVisible([
+            page.locator(testId('import-srp-confirm')),
+            page.getByRole('button', { name: 'Confirm Secret Recovery Phrase' }),
+            page.getByRole('button', { name: 'Confirm' }),
+        ], DEFAULT_TIMEOUT_MS);
+        if (!seedConfirmed)
+            throw new Error('Unable to confirm MetaMask seed phrase import.');
+    }
     const passwordFilled = await fillFirstVisible([page.locator(testId('create-password-new-input')), page.locator('input[type="password"]').nth(0)], password);
     if (!passwordFilled)
         throw new Error('Unable to find MetaMask password input.');
@@ -229,30 +442,58 @@ async function importMetaMaskWallet(page, setup) {
     const passwordSubmitted = await clickFirstVisible([page.locator(testId('create-password-submit')), page.getByRole('button', { name: 'Import my wallet' })], DEFAULT_TIMEOUT_MS);
     if (!passwordSubmitted)
         throw new Error('Unable to submit MetaMask import password.');
-    await clickFirstVisible([
-        page.locator(testId('onboarding-complete-done')),
-        page.getByRole('button', { name: 'Done' }),
-        page.getByRole('button', { name: 'Skip' }),
-    ], DEFAULT_TIMEOUT_MS);
-    await waitForMetaMaskReady(page);
+    await finishMetaMaskOnboarding(page);
 }
 async function unlockMetaMask(page, password) {
-    const passwordFilled = await fillFirstVisible([page.locator(testId('unlock-password')), page.locator('input[type="password"]').first()], password, DEFAULT_TIMEOUT_MS);
+    const passwordFilled = await fillFirstVisible(metaMaskUnlockPasswordLocators(page), password, DEFAULT_TIMEOUT_MS);
     if (!passwordFilled)
         throw new Error('Unable to find MetaMask unlock password input.');
-    const unlocked = await clickFirstVisible([page.locator(testId('unlock-submit')), page.getByRole('button', { name: 'Unlock' })], DEFAULT_TIMEOUT_MS);
+    const unlocked = await clickFirstVisible(metaMaskUnlockSubmitLocators(page), DEFAULT_TIMEOUT_MS);
     if (!unlocked)
         throw new Error('Unable to submit MetaMask unlock form.');
     await waitForMetaMaskReady(page);
+}
+async function unlockMetaMaskIfNeeded(page, password) {
+    if (!(await isMetaMaskUnlockVisible(page)))
+        return false;
+    if (!password) {
+        throw new Error('MetaMask profile is locked. Provide setup.password to unlock through web3-tester, or unlock the persistent profile before running.');
+    }
+    await page.bringToFront().catch(() => undefined);
+    await unlockMetaMask(page, password);
+    return true;
+}
+async function finishMetaMaskOnboarding(page) {
+    for (let attempt = 0; attempt < 6; attempt += 1) {
+        await waitForMetaMaskReady(page);
+        const actions = [...metaMaskPromptActions(page), ...metaMaskTextPromptActions(page)];
+        const onSetupScreen = page.url().includes('/home.html#/onboarding') ||
+            Boolean(await findVisibleLocator(actions, SHORT_TIMEOUT_MS));
+        if (!onSetupScreen)
+            return;
+        const advanced = await clickMetaMaskPromptAction(page, 5_000);
+        if (!advanced)
+            break;
+    }
+    if (await waitForMetaMaskHome(page, 10_000))
+        return;
+    if (page.url().includes('/home.html#/onboarding') ||
+        (await findVisibleLocator([...metaMaskPromptActions(page), ...metaMaskTextPromptActions(page)], SHORT_TIMEOUT_MS))) {
+        throw new Error('MetaMask wallet import did not complete onboarding.');
+    }
 }
 class MetaMaskRealWallet {
     context;
     homePage;
     extensionId;
-    constructor(context, homePage, extensionId) {
+    expectedAddress;
+    walletPassword;
+    constructor(context, homePage, extensionId, expectedAddress, walletPassword) {
         this.context = context;
         this.homePage = homePage;
         this.extensionId = extensionId;
+        this.expectedAddress = expectedAddress;
+        this.walletPassword = walletPassword;
     }
     async approveTokenPermission(options) {
         const page = await this.notificationPage();
@@ -281,9 +522,12 @@ class MetaMaskRealWallet {
             await scrollButton.click();
         }
         const signed = await clickFirstVisible([
+            page.locator(testId('confirm-footer-button')),
+            page.locator(testId('confirmation-submit-button')),
             page.locator(testId('request-signature__sign')),
             structuredSignButton,
             page.locator(testId('page-container-footer-next')),
+            page.getByRole('button', { name: 'Confirm' }),
             page.getByRole('button', { name: 'Sign' }),
         ], DEFAULT_TIMEOUT_MS);
         if (!signed)
@@ -291,10 +535,20 @@ class MetaMaskRealWallet {
         await clickFirstVisible([page.locator(testId('signature-warning-sign-button'))], SHORT_TIMEOUT_MS);
     }
     async confirmTransaction(options) {
-        const page = await this.notificationPage();
-        await this.applyGasSetting(page, options?.gasSetting);
-        await clickFirstVisible([page.locator('.set-approval-for-all-warning__footer__approve-button')], SHORT_TIMEOUT_MS);
-        await this.confirmFooterAction(page);
+        let page = await this.notificationPage();
+        for (let attempt = 0; attempt < 3; attempt += 1) {
+            await this.applyGasSetting(page, options?.gasSetting);
+            await clickFirstVisible([page.locator('.set-approval-for-all-warning__footer__approve-button')], SHORT_TIMEOUT_MS);
+            await this.confirmFooterAction(page);
+            await wait(1_000);
+            const nextPage = await findMetaMaskActionPage(this.context, this.extensionId);
+            if (!nextPage)
+                return;
+            page = nextPage;
+            await waitForMetaMaskReady(page);
+            await page.bringToFront().catch(() => undefined);
+        }
+        throw new Error('MetaMask transaction confirmation did not settle after multiple confirmation steps.');
     }
     async connectToDapp(accounts) {
         const page = await this.notificationPage();
@@ -307,8 +561,12 @@ class MetaMaskRealWallet {
     }
     async getAccountAddress() {
         const page = await this.home();
+        await waitForMetaMaskHome(page);
         await closeMetaMaskOverlay(page);
-        const openedMenu = await clickFirstVisible([page.locator(testId('account-options-menu-button'))], DEFAULT_TIMEOUT_MS);
+        if (this.expectedAddress && await pageContainsAddress(page, this.expectedAddress)) {
+            return this.expectedAddress;
+        }
+        const openedMenu = await clickFirstVisible(metaMaskAccountMenuLocators(page), DEFAULT_TIMEOUT_MS);
         if (!openedMenu)
             throw new Error('Unable to open MetaMask account options menu.');
         const openedDetails = await clickFirstVisible([page.locator(testId('account-list-menu-details'))], DEFAULT_TIMEOUT_MS);
@@ -334,15 +592,28 @@ class MetaMaskRealWallet {
         await this.rejectFooterAction(page);
     }
     async home() {
-        if (!this.homePage.isClosed()) {
-            await this.homePage.bringToFront().catch(() => undefined);
-            await waitForMetaMaskReady(this.homePage);
-            return this.homePage;
-        }
-        return openExtensionHome(this.context, this.extensionId);
+        const page = await openExtensionHome(this.context, this.extensionId);
+        await unlockMetaMaskIfNeeded(page, this.walletPassword);
+        return page;
     }
     async notificationPage() {
-        return getNotificationPage(this.context, this.extensionId);
+        await this.unlockVisibleMetaMask();
+        let page = await getNotificationPage(this.context, this.extensionId).catch(async (error) => {
+            if (await this.unlockVisibleMetaMask()) {
+                return getNotificationPage(this.context, this.extensionId);
+            }
+            throw error;
+        });
+        if (await unlockMetaMaskIfNeeded(page, this.walletPassword)) {
+            page = await getNotificationPage(this.context, this.extensionId);
+        }
+        return page;
+    }
+    async unlockVisibleMetaMask() {
+        const page = await findMetaMaskLockedPage(this.context, this.extensionId);
+        if (!page)
+            return false;
+        return unlockMetaMaskIfNeeded(page, this.walletPassword);
     }
     async confirmFooterAction(page, timeout = DEFAULT_TIMEOUT_MS) {
         const confirmed = await clickFirstVisible([
@@ -432,25 +703,13 @@ class MetaMaskRealWallet {
     }
 }
 async function prepareMetaMask({ expectedAddress, page, setup, wallet, }) {
-    const onboardingImport = page.locator(testId('onboarding-import-wallet'));
-    const onboardingCreate = page.locator(testId('onboarding-create-wallet'));
-    const onboardingTerms = page.locator(testId('onboarding-terms-checkbox'));
-    if ((await isVisible(onboardingImport, SHORT_TIMEOUT_MS).catch(() => false)) ||
-        (await isVisible(onboardingCreate, SHORT_TIMEOUT_MS).catch(() => false)) ||
-        (await isVisible(onboardingTerms, SHORT_TIMEOUT_MS).catch(() => false))) {
+    if (await isMetaMaskOnboardingVisible(page)) {
         if (!setup?.seedPhrase) {
             throw new Error('MetaMask is on onboarding. Provide setup.seedPhrase to import a wallet through web3-tester, or use a preconfigured persistent profile.');
         }
         await importMetaMaskWallet(page, setup);
     }
-    const unlockPassword = page.locator(testId('unlock-password'));
-    if (await isVisible(unlockPassword, SHORT_TIMEOUT_MS).catch(() => false)) {
-        const password = passwordForSetup(setup);
-        if (!password) {
-            throw new Error('MetaMask profile is locked. Provide setup.password to unlock through web3-tester, or unlock the persistent profile before running.');
-        }
-        await unlockMetaMask(page, password);
-    }
+    await unlockMetaMaskIfNeeded(page, passwordForSetup(setup));
     if (!expectedAddress)
         return;
     const address = await wallet.getAccountAddress();
@@ -476,7 +735,7 @@ export async function launchRealWallet(options) {
     });
     const extensionId = await getExtensionId(context, extensionName);
     const page = await openExtensionHome(context, extensionId);
-    const wallet = new MetaMaskRealWallet(context, page, extensionId);
+    const wallet = new MetaMaskRealWallet(context, page, extensionId, options.expectedAddress, passwordForSetup(options.setup));
     await prepareMetaMask({
         expectedAddress: options.expectedAddress,
         page,
