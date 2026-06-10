@@ -1,5 +1,6 @@
 import { parseEther, verifyMessage, verifyTypedData, type Hex } from 'viem';
 import { expect, test } from '../src/fixtures.js';
+import { MockWalletController } from '../src/mock-wallet-controller.js';
 
 const RECIPIENT = '0x000000000000000000000000000000000000beef' as const;
 
@@ -519,5 +520,132 @@ test.describe('EIP-6963 multi-provider announcements', () => {
     expect(summary.announcements.every((a) => a.frozenDetail && a.frozenInfo)).toBe(true);
     // Only the primary provider is window.ethereum.
     expect(summary.announcements.map((a) => a.isWindowEthereum)).toEqual([true, false, false]);
+  });
+});
+
+test.describe('multi-account', () => {
+  test.use({ walletOptions: { accountIndexes: [0, 1, 2] } });
+
+  test('starts connected with the configured accounts, in order', async ({ page, wallet, chain }) => {
+    const available = await chain.accounts();
+    const expected = available.slice(0, 3);
+    expect([...wallet.currentAccounts]).toEqual(expected);
+
+    const accounts = await requestFromPage(page, 'eth_accounts');
+    expect(accounts.ok ? accounts.result : []).toEqual(expected);
+
+    const permissions = await requestFromPage(page, 'wallet_getPermissions');
+    expect(permissions.ok ? permissions.result : []).toEqual([
+      {
+        parentCapability: 'eth_accounts',
+        caveats: [{ type: 'restrictReturnedAccounts', value: expected }],
+      },
+    ]);
+
+    expect(await page.evaluate(() => window.ethereum.selectedAddress)).toBe(expected[0]);
+  });
+
+  test('switchAccount reorders most-recently-selected-first and emits once', async ({ page, wallet }) => {
+    const [first, second, third] = wallet.currentAccounts;
+
+    await page.evaluate(() => {
+      (window as unknown as { __accountEvents: unknown[] }).__accountEvents = [];
+      window.ethereum.on('accountsChanged', (accounts: unknown) => {
+        (window as unknown as { __accountEvents: unknown[] }).__accountEvents.push(accounts);
+      });
+    });
+
+    await wallet.switchAccount(second!);
+    expect([...wallet.currentAccounts]).toEqual([second, first, third]);
+    await expect
+      .poll(() => page.evaluate(() => (window as unknown as { __accountEvents: unknown[] }).__accountEvents))
+      .toEqual([[second, first, third]]);
+    expect(await page.evaluate(() => window.ethereum.selectedAddress)).toBe(second);
+
+    // Already-selected switch emits nothing.
+    await wallet.switchAccount(second!);
+    expect(
+      await page.evaluate(() => (window as unknown as { __accountEvents: unknown[] }).__accountEvents),
+    ).toHaveLength(1);
+
+    // eth_requestAccounts and provider state see the new order too.
+    const requested = await requestFromPage(page, 'eth_requestAccounts');
+    expect(requested.ok ? requested.result : []).toEqual([second, first, third]);
+    const state = await requestFromPage(page, 'metamask_getProviderState');
+    expect((state.ok ? (state.result as { accounts: string[] }) : { accounts: [] }).accounts).toEqual([
+      second,
+      first,
+      third,
+    ]);
+  });
+
+  test('switchAccount refuses an address outside the wallet', async ({ wallet }) => {
+    await expect(wallet.switchAccount(RECIPIENT)).rejects.toThrow(/setAccounts/);
+  });
+
+  test('switchAccount while disconnected stays silent and does not reconnect (unlike setAccounts)', async ({ page, wallet }) => {
+    const [, second] = wallet.currentAccounts;
+    await wallet.disconnect();
+
+    await wallet.switchAccount(second!);
+    const accounts = await requestFromPage(page, 'eth_accounts');
+    expect(accounts).toEqual({ ok: true, result: [] });
+
+    // setAccounts reconnects; switchAccount's reorder surfaces afterwards.
+    await wallet.setAccounts([...wallet.currentAccounts]);
+    const after = await requestFromPage(page, 'eth_accounts');
+    expect((after.ok ? (after.result as string[]) : [])[0]).toBe(second);
+  });
+
+  test('eth_sendTransaction from an account the wallet does not hold is 4100', async ({ page, chain, wallet }) => {
+    expect(wallet.currentAccounts).toHaveLength(3);
+    const available = await chain.accounts();
+    const outsider = available[4]!; // a valid anvil signer, but not one of ours
+
+    const response = await requestFromPage(page, 'eth_sendTransaction', [
+      { from: outsider, to: RECIPIENT, value: '0x1' },
+    ]);
+    expect(response.ok).toBe(false);
+    expect((response as { error: ProviderErrorShape }).error.code).toBe(4100);
+  });
+});
+
+test.describe('account validation', () => {
+  test('injectMockProvider fails fast for accounts the node does not know', async ({ page, chain }) => {
+    const stranger = new MockWalletController(page, chain, {
+      accounts: [RECIPIENT],
+      chainId: chain.chainId,
+    });
+    await expect(stranger.injectMockProvider()).rejects.toThrow(/not known to the backing node/);
+  });
+
+  test('setAccounts validates, with allowUnknownAccounts as the explicit escape hatch', async ({ wallet }) => {
+    await expect(wallet.setAccounts([RECIPIENT])).rejects.toThrow(/chain.accounts\(\)/);
+    await wallet.setAccounts([RECIPIENT], { allowUnknownAccounts: true });
+    expect(wallet.primaryAccount).toBe(RECIPIENT);
+  });
+
+  test('impersonated accounts validate without any flag; signing still fails node-side', async ({ page, chain, wallet }) => {
+    const whale = '0x00000000000000000000000000000000000a11ce' as const;
+    await chain.impersonateAccount(whale);
+    await chain.setBalance(whale, parseEther('10'));
+
+    try {
+      // The re-probe sees the impersonated account — no escape hatch needed.
+      await wallet.setAccounts([whale]);
+
+      const sent = await requestFromPage(page, 'eth_sendTransaction', [
+        { to: RECIPIENT, value: `0x${parseEther('1').toString(16)}` },
+      ]);
+      expect(sent.ok).toBe(true);
+
+      // Impersonation cannot sign: anvil holds no key for the whale.
+      const signed = await requestFromPage(page, 'personal_sign', ['0x68656c6c6f', whale]);
+      expect(signed.ok).toBe(false);
+      expect((signed as { error: ProviderErrorShape }).error.code).toBe(-32602);
+    } finally {
+      // Impersonation is not snapshot/revert state — clean up explicitly.
+      await chain.stopImpersonatingAccount(whale);
+    }
   });
 });

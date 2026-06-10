@@ -2,6 +2,36 @@
 
 ## Unreleased
 
+### Added — multi-account & two-user fixtures (0.3.0)
+
+- `walletOptions.accounts` / `walletOptions.accountIndexes` start a test
+  connected with several anvil accounts; `wallet.switchAccount(address)`
+  re-selects (most-recently-selected-first `accountsChanged`, no event when
+  already selected, no reconnect while disconnected — unlike `setAccounts`,
+  which still reconnects); `wallet.currentAccounts` exposes the ordered set.
+- `createUser()` fixture factory: each call returns a `UserSession`
+  (`context`, `page`, `wallet`, idempotent `close()`) — a fresh browser
+  context on the shared worker chain(s), defaulting to anvil accounts
+  1, 2, 3…, inheriting the test's `walletOptions` as a base layer under
+  per-call overrides.
+- Per-test snapshot/revert moved into a single shared `_chainIsolation`
+  owner spanning every running chain — `createUser`-only tests now get
+  isolation too, and a multi-user test takes exactly one snapshot.
+- `PrivateKeyRpcClient` answers `eth_accounts` locally with its own address.
+
+Behavior changes (0.3.0 migration):
+
+- Wallet accounts are validated against the node's `eth_accounts` at
+  `injectMockProvider()`/`setAccounts()` time — a non-anvil address now
+  fails fast with remedies in the message instead of dying later in the
+  dapp with anvil's opaque `-32602`. Impersonated accounts validate without
+  a flag (the probe re-checks on miss); custom `RpcClient`s that cannot
+  answer `eth_accounts` fail open, and
+  `setAccounts(accounts, { allowUnknownAccounts: true })` is the explicit
+  escape hatch.
+- `eth_sendTransaction` with a `from` outside the wallet's accounts now
+  throws `4100` instead of letting anvil sign with any unlocked account.
+
 ### Added — multi-chain mock routing (0.3.0)
 
 - `MockWalletControllerOptions.chains`: register extra chains keyed by chain

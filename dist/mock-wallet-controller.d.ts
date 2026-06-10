@@ -83,12 +83,15 @@ export declare class MockWalletController {
     private readonly allowedOrigins?;
     private readonly providerEventListeners;
     private sendQueue;
+    private nodeAccountsCache?;
     readonly sentTransactions: Hex[];
     readonly sentTransactionRequests: SentTransactionRecord[];
     constructor(page: Page, rpcClient: RpcClient, options: MockWalletControllerOptions);
     readonly providerInfo: WalletProviderInfo;
     readonly providerInfos: readonly WalletProviderInfo[];
     get primaryAccount(): Address;
+    /** Current account list; index 0 is the selected account. */
+    get currentAccounts(): readonly Address[];
     get currentChainId(): Hex;
     /** Chain ids that currently have an RPC backend, canonical hex. */
     get backedChainIds(): readonly Hex[];
@@ -142,7 +145,23 @@ export declare class MockWalletController {
     waitForNextTransaction(options?: {
         timeoutMs?: number;
     }): Promise<Hex>;
-    setAccounts(accounts: readonly Address[]): Promise<void>;
+    /**
+     * Replaces the account set (and reconnects a disconnected wallet — unlike
+     * switchAccount, which only reorders). Accounts are validated against the
+     * backing node's eth_accounts; pass { allowUnknownAccounts: true } only
+     * for custom RpcClients whose account list the probe cannot see.
+     */
+    setAccounts(accounts: readonly Address[], options?: {
+        allowUnknownAccounts?: boolean;
+    }): Promise<void>;
+    /**
+     * Re-selects one of the wallet's existing accounts: moves it to index 0
+     * (MetaMask orders eth_accounts most-recently-selected first) and emits
+     * accountsChanged with the reordered array. No event when it is already
+     * selected, and — unlike setAccounts — no reconnect while disconnected:
+     * the reorder stays internal until the wallet reconnects.
+     */
+    switchAccount(address: Address): Promise<void>;
     disconnect(): Promise<void>;
     reconnect(): Promise<void>;
     switchNetwork(chainId: number | Hex): Promise<void>;
@@ -151,6 +170,8 @@ export declare class MockWalletController {
     private get activeRpcClient();
     private enqueueSend;
     private consumeRule;
+    private fetchNodeAccounts;
+    private assertAccountsKnownToNode;
     private assertOriginAllowed;
     private assertUserApproved;
     private permissionResponse;

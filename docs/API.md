@@ -21,6 +21,7 @@ Fixtures:
 | Fixture | Scope | Description |
 | --- | --- | --- |
 | `wallet` | test | `MockWalletController` injected into the page before app scripts run. |
+| `createUser` | test | Factory for additional users: each call returns a `UserSession` (`{ context, page, wallet, close() }`) — a fresh browser context with its own wallet on the shared worker chain(s). |
 | `chain` | worker | `ChainController` connected to the worker's primary Anvil node. |
 | `chains` | worker | `ReadonlyMap<number, ChainController>` over every running chain, primary included. |
 | `anvil` | worker | Running primary `AnvilInstance`. |
@@ -29,8 +30,18 @@ Fixtures:
 | `anvilOptions` | option | Worker-level Anvil runtime overrides. |
 | `extraChains` | option (worker) | `AnvilChainSpec[]` — one extra Anvil per entry, on its own chain id. |
 
-Each `wallet` test snapshots the state of **every** running chain before test
-code runs and reverts all of them after the test finishes.
+Each test using `wallet` or `createUser` snapshots the state of **every**
+running chain once before test code runs and reverts all of them after the
+test finishes (one shared snapshot per test — chain state is intentionally
+shared between users within a test and reverts atomically at the end).
+
+Accounts: `walletOptions.accounts` (explicit addresses) or
+`walletOptions.accountIndexes` (indexes into `chain.accounts()`) start the
+wallet with several accounts; the default stays anvil account 0.
+`createUser()` calls default to accounts 1, 2, 3… in creation order, inherit
+the test's `walletOptions` as a base layer (so deny-mode or origin scoping
+covers every user), and accept per-call overrides plus `contextOptions`
+(other `test.use` context options are **not** inherited by the new context).
 
 Multi-chain: `test.use({ extraChains: [{ chainId: 84532 }] })` boots one extra
 Anvil per worker (inheriting `anvilOptions` — runtime, executable, image — with
@@ -290,7 +301,9 @@ Methods:
 | `simulateRejection(methods?, message?)` | Rejects the next matching request with code `4001`. The default method set covers all approval-gated methods. |
 | `holdNextRequest(methods?)` | Keeps the next matching request pending until the returned `HeldRequest` is approved or rejected — for "confirm in your wallet" UI states. |
 | `waitForNextTransaction(options?)` | Resolves with the hash of the next transaction the page submits. |
-| `setAccounts(accounts)` | Updates accounts and emits `accountsChanged`. |
+| `setAccounts(accounts, { allowUnknownAccounts? })` | Replaces the account set, **reconnects a disconnected wallet**, validates against the node's `eth_accounts`, and emits `accountsChanged`. |
+| `switchAccount(address)` | Re-selects an existing account: moves it to index 0 (MetaMask's most-recently-selected-first order) and emits `accountsChanged`. No event when already selected; unlike `setAccounts`, does **not** reconnect while disconnected. |
+| `currentAccounts` | Current account list; index 0 is the selected account. |
 | `disconnect()` | Emits `accountsChanged` and `disconnect`; signing while disconnected throws `4100`. |
 | `reconnect()` | Emits `connect` and `accountsChanged`. |
 | `switchNetwork(chainId)` | Updates chain ID, marks it known, and emits `chainChanged` (no event for a same-chain switch). |
@@ -309,6 +322,16 @@ non-empty array of valid URLs, per EIP-3085), registers, and switches;
 `wallet_revokePermissions` disconnects. Unknown `wallet_*` methods return
 `4200` instead of leaking node errors; all other unhandled methods are
 forwarded to the **active chain's** RPC backend.
+
+Account semantics: `eth_sendTransaction` rejects a `from` outside
+`currentAccounts` with `4100` (MetaMask-faithful — anvil would happily sign
+with any unlocked dev account). Wallet accounts are validated against the
+node's `eth_accounts` at injection/`setAccounts` time; the check fails open
+when the node cannot answer (live RPC endpoints, custom clients — and it is
+best-effort under `anvil --auto-impersonate`). Impersonated accounts
+(`chain.impersonateAccount`) validate without any flag because anvil lists
+them — sends work, but `personal_sign`/typed-data still fail node-side with
+`-32602` since anvil holds no key.
 
 Multi-chain routing: every forwarded method (reads, `eth_sendTransaction`,
 `eth_sendRawTransaction`, signing) goes to the backend registered for the

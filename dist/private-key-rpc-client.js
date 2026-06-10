@@ -48,6 +48,11 @@ export class PrivateKeyRpcClient {
     async request(request) {
         const params = parseParams(request);
         switch (request.method) {
+            // Answered locally: the client holds exactly one key, and remote RPC
+            // nodes answer [] (a needless network roundtrip that would also blind
+            // MockWalletController's account validation in live mode).
+            case 'eth_accounts':
+                return [this.account.address];
             case 'personal_sign': {
                 // Standard order is [message, address]; some legacy callers send
                 // [address, message]. When both params are addresses the request is

@@ -141,6 +141,7 @@ export class MockWalletController {
     // a snapshot window) must not interleave — exposeBinding handlers run
     // concurrently.
     sendQueue = Promise.resolve();
+    nodeAccountsCache;
     sentTransactions = [];
     sentTransactionRequests = [];
     constructor(page, rpcClient, options) {
@@ -199,6 +200,10 @@ export class MockWalletController {
     get primaryAccount() {
         return this.accounts[0];
     }
+    /** Current account list; index 0 is the selected account. */
+    get currentAccounts() {
+        return [...this.accounts];
+    }
     get currentChainId() {
         return this.chainId;
     }
@@ -241,6 +246,10 @@ export class MockWalletController {
         };
     }
     async injectMockProvider() {
+        // Fail fast on misconfigured accounts before any page plumbing exists —
+        // a bad fixture config surfaces here with a readable message instead of
+        // dying later inside the dapp with anvil's opaque -32602.
+        await this.assertAccountsKnownToNode(this.accounts, 'injectMockProvider');
         // Context-level injection so pages the dapp opens itself (window.open,
         // target=_blank flows) get the provider too.
         const context = this.page.context();
@@ -340,13 +349,43 @@ export class MockWalletController {
         }
         throw new Error(`Timed out after ${timeoutMs}ms waiting for the page to submit a transaction.`);
     }
-    async setAccounts(accounts) {
+    /**
+     * Replaces the account set (and reconnects a disconnected wallet — unlike
+     * switchAccount, which only reorders). Accounts are validated against the
+     * backing node's eth_accounts; pass { allowUnknownAccounts: true } only
+     * for custom RpcClients whose account list the probe cannot see.
+     */
+    async setAccounts(accounts, options = {}) {
         if (accounts.length === 0) {
             throw new Error('setAccounts requires at least one account. Use disconnect() to expose no accounts.');
+        }
+        if (!options.allowUnknownAccounts) {
+            await this.assertAccountsKnownToNode(accounts, 'setAccounts');
         }
         this.accounts = [...accounts];
         this.connected = true;
         await this.emit('accountsChanged', this.accounts);
+    }
+    /**
+     * Re-selects one of the wallet's existing accounts: moves it to index 0
+     * (MetaMask orders eth_accounts most-recently-selected first) and emits
+     * accountsChanged with the reordered array. No event when it is already
+     * selected, and — unlike setAccounts — no reconnect while disconnected:
+     * the reorder stays internal until the wallet reconnects.
+     */
+    async switchAccount(address) {
+        const index = this.accounts.findIndex((account) => account.toLowerCase() === address.toLowerCase());
+        if (index === -1) {
+            throw new Error(`switchAccount: "${address}" is not one of the wallet's accounts. Use setAccounts() to change the set.`);
+        }
+        if (index === 0) {
+            return;
+        }
+        const [selected] = this.accounts.splice(index, 1);
+        this.accounts.unshift(selected);
+        if (this.connected) {
+            await this.emit('accountsChanged', this.accounts);
+        }
     }
     async disconnect() {
         this.connected = false;
@@ -416,6 +455,55 @@ export class MockWalletController {
         }
         const [rule] = queue.splice(index, 1);
         return rule;
+    }
+    // Bounded probe of the backing node's account list. Returns undefined when
+    // the node cannot answer (throw, timeout, non-array, empty) — validation
+    // then fails open, which is what keeps live RPC endpoints and custom
+    // RpcClients usable.
+    async fetchNodeAccounts() {
+        const TIMED_OUT = Symbol('probe-timeout');
+        try {
+            const result = await Promise.race([
+                this.rpcClient.request({ method: 'eth_accounts', params: [] }),
+                new Promise((resolve) => setTimeout(() => resolve(TIMED_OUT), 2_500)),
+            ]);
+            if (result === TIMED_OUT || !Array.isArray(result) || result.length === 0) {
+                return undefined;
+            }
+            return new Set(result.map((account) => String(account).toLowerCase()));
+        }
+        catch {
+            return undefined;
+        }
+    }
+    // Membership in the node's eth_accounts means the node will ACCEPT sends
+    // from the account — not that it can sign messages for it: anvil lists
+    // impersonated accounts too (their personal_sign still fails node-side
+    // with -32602). Re-probes on a miss so accounts impersonated after the
+    // first probe validate without any escape hatch. Best-effort under
+    // anvil --auto-impersonate, where every address is accepted.
+    async assertAccountsKnownToNode(accounts, operation) {
+        let known = this.nodeAccountsCache ?? (await this.fetchNodeAccounts());
+        if (!known) {
+            return;
+        }
+        this.nodeAccountsCache = known;
+        const unknownIn = (set) => accounts.filter((account) => !set.has(account.toLowerCase()));
+        if (unknownIn(known).length > 0) {
+            known = await this.fetchNodeAccounts();
+            if (!known) {
+                return;
+            }
+            this.nodeAccountsCache = known;
+        }
+        const unknown = unknownIn(known);
+        if (unknown.length > 0) {
+            throw new Error(`${operation}: account(s) ${unknown.join(', ')} are not known to the backing node ` +
+                `(${known.size} node accounts). Use addresses from chain.accounts(), or ` +
+                'chain.impersonateAccount(address) for send-only flows (impersonated accounts can send ' +
+                'transactions, but personal_sign/typed-data still fail node-side with -32602). For custom ' +
+                'RpcClients that cannot answer eth_accounts, pass { allowUnknownAccounts: true } to setAccounts.');
+        }
     }
     assertOriginAllowed(origin) {
         if (!this.allowedOrigins) {
@@ -571,13 +659,19 @@ export class MockWalletController {
                     networkVersion: String(Number(BigInt(this.chainId))),
                 };
             case 'eth_sendTransaction': {
+                const transaction = { ...params[0] };
+                transaction.from ??= this.primaryAccount;
+                // MetaMask rejects sends from accounts the dapp is not authorized
+                // for; anvil would happily sign with ANY unlocked dev account.
+                const from = String(transaction.from).toLowerCase();
+                if (!this.accounts.some((account) => account.toLowerCase() === from)) {
+                    throw providerError(4100, `The requested account ${String(transaction.from)} has not been authorized by the user.`);
+                }
                 await this.assertUserApproved(method, params);
                 // Capture the routed chain at approval time so a concurrent switch
                 // cannot redirect a queued send.
                 const chainId = this.chainId;
                 const client = this.activeRpcClient;
-                const transaction = { ...params[0] };
-                transaction.from ??= this.primaryAccount;
                 const hash = (await this.enqueueSend(() => client.request({ method, params: [transaction] })));
                 this.sentTransactions.push(hash);
                 this.sentTransactionRequests.push({

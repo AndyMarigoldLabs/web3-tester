@@ -1,13 +1,41 @@
-import { test as base } from '@playwright/test';
+import { test as base, type Browser, type BrowserContext, type Page } from '@playwright/test';
 import { existsSync } from 'node:fs';
 import { join } from 'node:path';
+import type { Address } from 'viem';
 import { foundry } from 'viem/chains';
-import { AnvilInstance, ChainController, type AnvilOptions } from './anvil.js';
+import { AnvilInstance, ChainController, type AnvilOptions, type AnvilSnapshotId } from './anvil.js';
 import { MockWalletController, type MockWalletControllerOptions } from './mock-wallet-controller.js';
+
+/** A second (third, …) user: its own browser context, page, and wallet. */
+export type UserSession = {
+  context: BrowserContext;
+  page: Page;
+  wallet: MockWalletController;
+  /** Idempotent mid-test disposal ("user leaves"); also runs at teardown. */
+  close(): Promise<void>;
+};
+
+export type CreateUserOptions = MockWalletFixtureOptions & {
+  /**
+   * Passed to browser.newContext(); baseURL is forwarded by default. Other
+   * test.use context options (viewport, locale, storageState…) are NOT
+   * inherited — pass them here when a user needs them.
+   */
+  contextOptions?: Parameters<Browser['newContext']>[0];
+};
+
+export type CreateUser = (options?: CreateUserOptions) => Promise<UserSession>;
 
 export type Web3Fixtures = {
   wallet: MockWalletController;
   walletOptions: MockWalletFixtureOptions;
+  /** Factory: fresh context + page + wallet on the shared worker chain(s). */
+  createUser: CreateUser;
+  /**
+   * Internal plumbing: the single per-test snapshot/revert owner spanning
+   * every running chain; wallet and createUser both depend on it.
+   */
+  _chainIsolation: void;
 };
 
 /**
@@ -31,10 +59,43 @@ export type Web3WorkerFixtures = {
   chains: ReadonlyMap<number, ChainController>;
 };
 
-export type MockWalletFixtureOptions = Omit<
-  Partial<MockWalletControllerOptions>,
-  'accounts' | 'chainId'
->;
+// chainId stays fixture-managed (the chain/chains fixtures own routing).
+export type MockWalletFixtureOptions = Omit<Partial<MockWalletControllerOptions>, 'chainId'> & {
+  /** Indexes into chain.accounts(); mutually exclusive with `accounts`. */
+  accountIndexes?: readonly number[];
+};
+
+const resolveAccounts = async (
+  chain: ChainController,
+  options: { accounts?: readonly Address[]; accountIndexes?: readonly number[] },
+  fallbackIndex: number,
+): Promise<Address[]> => {
+  if (options.accounts && options.accountIndexes) {
+    throw new Error('Pass either accounts or accountIndexes, not both.');
+  }
+
+  if (options.accounts) {
+    return [...options.accounts];
+  }
+
+  const available = await chain.accounts();
+  const pick = (index: number): Address => {
+    const account = available[index];
+    if (!account) {
+      throw new Error(
+        `Account index ${index} is out of range: the node exposes ${available.length} accounts. ` +
+          'Raise anvilOptions: { accounts: n } to generate more.',
+      );
+    }
+    return account;
+  };
+
+  if (options.accountIndexes) {
+    return options.accountIndexes.map(pick);
+  }
+
+  return [pick(fallbackIndex)];
+};
 
 // Base defaults to 8645 rather than anvil's own 8545 so the fixture never
 // collides with a developer-run dev node on the conventional port.
@@ -172,46 +233,128 @@ export const test = base.extend<Web3Fixtures, Web3WorkerFixtures>({
     { scope: 'worker' },
   ],
 
-  wallet: async ({ page, chain, chains, walletOptions: customWalletOptions }, use) => {
-    // Per-test isolation must cover every chain a test can touch.
-    const snapshots = new Map<ChainController, Awaited<ReturnType<ChainController['snapshot']>>>();
+  // The single per-test snapshot/revert owner. Playwright memoizes fixtures,
+  // so a test using both wallet and createUser takes exactly ONE snapshot
+  // per chain, and teardown runs dependents first — user contexts close
+  // before the single revert.
+  _chainIsolation: async ({ chains }, use) => {
+    const snapshots = new Map<ChainController, AnvilSnapshotId>();
     for (const controller of chains.values()) {
       snapshots.set(controller, await controller.snapshot());
     }
 
-    const [defaultAccount] = await chain.accounts();
-    if (!defaultAccount) {
-      throw new Error('Anvil did not expose any default accounts.');
-    }
-
-    // The primary chain is the positional rpcClient; extras go in the chains
-    // option. User-supplied walletOptions.chains entries win per key, but
-    // fixture extras are never silently dropped (their Anvils keep running).
-    const extraBackends = Object.fromEntries(
-      [...chains].filter(([chainId]) => chainId !== chain.chainId),
-    );
-    const mergedChains = { ...extraBackends, ...customWalletOptions.chains };
-
-    const walletOptions: MockWalletControllerOptions = {
-      accounts: [defaultAccount],
-      chainId: chain.chainId,
-      autoApprove: true,
-      connected: true,
-      ...customWalletOptions,
-      ...(Object.keys(mergedChains).length > 0 ? { chains: mergedChains } : {}),
-    };
-
-    const wallet = new MockWalletController(page, chain, walletOptions);
-    await wallet.injectMockProvider();
-
     try {
-      await use(wallet);
+      await use(undefined as void);
     } finally {
       for (const [controller, snapshotId] of snapshots) {
         await controller.revert(snapshotId);
       }
     }
   },
+
+  wallet: async ({ page, chain, chains, walletOptions: customWalletOptions, _chainIsolation }, use) => {
+    void _chainIsolation;
+    const { accounts, accountIndexes, ...controllerOverrides } = customWalletOptions;
+    const resolvedAccounts = await resolveAccounts(chain, { accounts, accountIndexes }, 0);
+
+    const wallet = new MockWalletController(
+      page,
+      chain,
+      buildControllerOptions(chain, chains, resolvedAccounts, controllerOverrides),
+    );
+    await wallet.injectMockProvider();
+    await use(wallet);
+  },
+
+  createUser: async (
+    { browser, chain, chains, baseURL, walletOptions: customWalletOptions, _chainIsolation },
+    use,
+  ) => {
+    void _chainIsolation;
+    const sessions: UserSession[] = [];
+    // Index 0 is the primary wallet fixture's default; users without
+    // explicit accounts take 1, 2, 3… in creation order.
+    let nextDefaultIndex = 1;
+
+    const factory: CreateUser = async (options = {}) => {
+      // The test's walletOptions are the base layer (so deny-mode or origin
+      // scoping applies to every user) under per-call overrides — except
+      // accounts/accountIndexes, which resolveAccounts owns per user.
+      const {
+        accounts: _baseAccounts,
+        accountIndexes: _baseIndexes,
+        ...baseOptions
+      } = customWalletOptions;
+      const merged = { ...baseOptions, ...options };
+      const { accounts, accountIndexes, contextOptions, ...controllerOverrides } = merged;
+
+      const resolvedAccounts = await resolveAccounts(
+        chain,
+        { accounts, accountIndexes },
+        nextDefaultIndex,
+      );
+      if (!accounts && !accountIndexes) {
+        nextDefaultIndex += 1;
+      }
+
+      const context = await browser.newContext({ baseURL, ...contextOptions });
+      const page = await context.newPage();
+      const wallet = new MockWalletController(
+        page,
+        chain,
+        buildControllerOptions(chain, chains, resolvedAccounts, controllerOverrides),
+      );
+      await wallet.injectMockProvider();
+
+      let closed = false;
+      const session: UserSession = {
+        context,
+        page,
+        wallet,
+        close: async () => {
+          if (closed) {
+            return;
+          }
+          closed = true;
+          await context.close().catch(() => undefined);
+        },
+      };
+      sessions.push(session);
+      return session;
+    };
+
+    try {
+      await use(factory);
+    } finally {
+      for (const session of sessions) {
+        await session.close();
+      }
+    }
+  },
 });
+
+// The primary chain is the positional rpcClient; extras go in the chains
+// option. User-supplied chains entries win per key, but fixture extras are
+// never silently dropped (their Anvils keep running).
+const buildControllerOptions = (
+  chain: ChainController,
+  chains: ReadonlyMap<number, ChainController>,
+  accounts: readonly Address[],
+  overrides: Omit<MockWalletFixtureOptions, 'accounts' | 'accountIndexes'>,
+): MockWalletControllerOptions => {
+  const extraBackends = Object.fromEntries(
+    [...chains].filter(([chainId]) => chainId !== chain.chainId),
+  );
+  const mergedChains = { ...extraBackends, ...overrides.chains };
+
+  return {
+    accounts,
+    chainId: chain.chainId,
+    autoApprove: true,
+    connected: true,
+    ...overrides,
+    ...(Object.keys(mergedChains).length > 0 ? { chains: mergedChains } : {}),
+  };
+};
 
 export { expect } from '@playwright/test';

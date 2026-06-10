@@ -234,7 +234,11 @@ await chain.mine(3);
 await wallet.simulateRejection('eth_sendTransaction');
 await wallet.disconnect();
 await wallet.reconnect();
-await wallet.setAccounts(['0x0000000000000000000000000000000000000001']);
+// Accounts are validated against the node's signers — use chain.accounts()
+// entries (or chain.impersonateAccount(addr) first for send-only flows).
+const [, second] = await chain.accounts();
+await wallet.setAccounts([second]);
+await wallet.switchAccount(second); // reorders + emits accountsChanged
 await wallet.switchNetwork(11155111);
 
 // Pending-approval simulation and transaction assertions:
@@ -250,6 +254,20 @@ const hash = await txPromise;
 Dapp-initiated `wallet_switchEthereumChain` follows MetaMask semantics: it
 throws 4902 for chains the wallet does not know; chains become known via
 `wallet_addEthereumChain` or a test-driven `wallet.switchNetwork(...)`.
+
+Multi-account and multi-user testing:
+
+```ts
+// Start connected with three anvil accounts:
+test.use({ walletOptions: { accountIndexes: [0, 1, 2] } });
+
+// Two users, one chain — seller lists, buyer purchases:
+test('buyer sees the listing', async ({ page, wallet, createUser }) => {
+  const buyer = await createUser(); // own context + page, anvil account #1
+  await buyer.page.goto('/listings/1');
+  await buyer.page.getByRole('button', { name: 'Buy' }).click();
+});
+```
 
 ## Multiple Wallet Selectors
 

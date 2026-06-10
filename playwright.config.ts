@@ -16,6 +16,7 @@ export default defineConfig({
         '**/live-fixtures.spec.ts',
         '**/mock-wallet.spec.ts',
         '**/mock-wallet-multichain.spec.ts',
+        '**/multi-user.spec.ts',
         '**/private-key-rpc-client.spec.ts',
         '**/provider-injection.spec.ts',
         '**/real-wallet.spec.ts',
