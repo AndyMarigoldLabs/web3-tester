@@ -1,7 +1,11 @@
 import path from 'node:path';
 import { test as base, type Page } from '@playwright/test';
 import { prepareMetaMaskExtension } from './metamask-extension.js';
-import { buildWalletProfile, cloneWalletProfile } from './real-wallet-cache.js';
+import {
+  buildWalletProfile,
+  cloneWalletProfile,
+  type BuildWalletProfileOptions,
+} from './real-wallet-cache.js';
 import {
   launchRealWallet,
   type RealWalletSession,
@@ -27,6 +31,12 @@ export type RealWalletFixtureOptions = {
   baseURL?: string;
   expectedAddress?: string;
   headless?: boolean;
+  /**
+   * One-time profile customization baked into the cached profile (import
+   * keys, add accounts/networks/tokens) — Synpress defineWalletSetup-style.
+   * Ignored when an explicit profileDir bypasses the cache.
+   */
+  profileSetup?: BuildWalletProfileOptions['customize'];
 };
 
 export type RealWalletFixtures = {
@@ -78,6 +88,7 @@ export const test = base.extend<RealWalletFixtures>({
         extensionPath,
         setup,
         headless: options.headless,
+        customize: options.profileSetup,
       });
       profileDir = await cloneWalletProfile(
         cachedProfile,

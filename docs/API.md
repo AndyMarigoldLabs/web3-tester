@@ -201,6 +201,33 @@ account tree has no single "selected" account before a dapp connects, so on
 13.x prefer passing `expectedAddress` (verified against the wallet UI) or read
 the connected account from your dapp.
 
+## Real Wallet account/token/settings surface
+
+`RealWalletController` covers Synpress v4's MetaMask account/token/settings/
+activity flows across both pinned UI generations (12.23.1 and 13.34.1):
+
+| Method | Notes |
+| --- | --- |
+| `importWalletFromPrivateKey(key)` | Imports an "Imported" keyring account; throws MetaMask's inline error (e.g. duplicate). Use a non-mnemonic key — 13.x SRP discovery derives the well-known dev keys. |
+| `addNewAccount(name?)` | Next derived SRP account; 13.x creates then renames. |
+| `switchAccount(nameOrAddress)` | By display name (both gens) or address (best-effort on 13.x, whose cells show names). |
+| `renameAccount(current, new)` | |
+| `lock()` / `unlock(password?)` | |
+| `resetAccount()` | Clears activity/nonce data (12.x Advanced; 13.x Developer tools, with a settings-search fallback). |
+| `toggleShowTestNetworks(on?)` | Idempotent with an explicit state. 13.x renders the toggle only when a test-chain network is configured. |
+| `importToken(token)` / `approveAddToken()` (alias `addNewToken()`) / `rejectAddToken()` | Manual import and `wallet_watchAsset` approve/reject. |
+| `confirmTransactionAndWaitForMining(options?)` | Confirms, waits for the activity row to reach confirmed, returns `{ txHash? }` (best-effort clipboard read — undefined on failure; the wait still completes). |
+| `rejectTokenPermission()` | |
+
+Account mutations during the cached-profile `customize` hook survive profile
+close on 13.x's debounced IndexedDB persistence
+(`waitForExtensionStatePersisted` waits for the flush). Note: the full
+end-to-end smoke for these methods is opt-in and pending the dual-version
+selector stabilization pass — the selectors are bundle-verified against both
+pinned builds. (Descoped from Synpress parity for now:
+`openTransactionDetails`/`closeTransactionDetails` and the
+`eth_getEncryptionPublicKey`/`eth_decrypt` helpers.)
+
 ## Real Wallet (imperative)
 
 ```ts

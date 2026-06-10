@@ -289,9 +289,9 @@ function extensionPageUrlPrefix(extensionId) {
 function metaMaskActionContentLocators(page) {
     return [
         page.getByRole('heading', {
-            name: /Spending cap request|Transaction request|Signature request|Sign-in request|Permission request/i,
+            name: /Spending cap request|Transaction request|Signature request|Sign-in request|Permission request|Add suggested tokens?/i,
         }),
-        page.getByText(/Spending cap request|Transaction request|Signature request|Sign-in request|Permission request|This site wants permission/i),
+        page.getByText(/Spending cap request|Transaction request|Signature request|Sign-in request|Permission request|This site wants permission|Add suggested tokens?/i),
     ];
 }
 function metaMaskActionControlLocators(page) {
@@ -388,6 +388,34 @@ async function getNotificationPage(context, extensionId, timeout = DEFAULT_TIMEO
 }
 function shortAddress(address) {
     return `${address.slice(0, 6)}...${address.slice(-4)}`.toLowerCase();
+}
+const escapeRegExp = (value) => value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+/** @internal Validates and trims a 32-byte hex private key (0x optional). */
+export function normalizePrivateKey(privateKey) {
+    const trimmed = privateKey.trim();
+    if (!/^(0x)?[0-9a-fA-F]{64}$/.test(trimmed)) {
+        throw new Error('importWalletFromPrivateKey requires a 32-byte hex private key (with or without 0x).');
+    }
+    return trimmed;
+}
+/** @internal */
+export function isFullTxHash(value) {
+    return typeof value === 'string' && /^0x[0-9a-fA-F]{64}$/.test(value);
+}
+/**
+ * @internal Matches an account picker row by display name, or by full /
+ * shortened address when the identifier is an address.
+ */
+export function accountRowMatcher(identifier) {
+    if (FULL_ADDRESS_PATTERN.test(identifier)) {
+        return new RegExp(`${escapeRegExp(identifier)}|${escapeRegExp(shortAddress(identifier))}`, 'i');
+    }
+    return new RegExp(escapeRegExp(identifier), 'i');
+}
+// Account picker rows across UI generations: 12.x popover items, 13.x
+// multichain account cells.
+function accountRowLocator(page) {
+    return page.locator('.multichain-account-menu-popover__list--menu-item, .multichain-account-cell, .multichain-account-list-item');
 }
 async function pageContainsAddress(page, address) {
     const normalizedAddress = address.toLowerCase();
@@ -553,7 +581,10 @@ class MetaMaskRealWallet {
     extensionId;
     expectedAddress;
     walletPassword;
-    constructor(context, homePage, extensionId, expectedAddress, walletPassword) {
+    constructor(context, homePage, extensionId, 
+    // Mutable: account mutations (switchAccount, imports, new accounts) must
+    // invalidate it, or getAccountAddress's fast-path returns stale results.
+    expectedAddress, walletPassword) {
         this.context = context;
         this.homePage = homePage;
         this.extensionId = extensionId;
@@ -768,8 +799,10 @@ class MetaMaskRealWallet {
         // 13.x splits the picker into "Default"/popular and "Custom" tabs; the
         // custom RPC form lives behind the Custom tab. (The bare "Add network"
         // buttons on the default tab add preconfigured popular networks, not a
-        // custom RPC.) Selecting the tab is a no-op on 12.x.
-        await clickFirstVisible([page.getByRole('tab', { name: /^Custom$/i })], SHORT_TIMEOUT_MS);
+        // custom RPC.) Selecting the tab is a no-op on 12.x. The modal animates
+        // in, so give the click room to stabilize.
+        await wait(300);
+        await clickFirstVisible([page.getByRole('tab', { name: /^Custom$/i })], 8_000);
         const addStarted = await clickFirstVisible([
             page.locator(testId('network-list-menu-add-button')),
             page.getByRole('button', { name: /Add a custom network|Add custom network/i }),
@@ -811,8 +844,11 @@ class MetaMaskRealWallet {
             ], network.blockExplorerUrl, SHORT_TIMEOUT_MS);
         }
         const saved = await clickFirstVisible([page.locator(testId('network-form-save')), page.getByRole('button', { name: /^Save$/i })], DEFAULT_TIMEOUT_MS);
-        if (!saved)
-            throw new Error('Unable to save the MetaMask network.');
+        if (!saved) {
+            throw new Error('Unable to save the MetaMask network. Note that 13.x refuses custom networks under a ' +
+                'known chain id ("edit the original network") — add those via a dapp ' +
+                'wallet_addEthereumChain request plus approveNewNetwork() instead.');
+        }
         await waitForMetaMaskReady(page);
         await clickMetaMaskPromptAction(page, SHORT_TIMEOUT_MS);
         await closeMetaMaskOverlay(page);
@@ -881,6 +917,468 @@ class MetaMaskRealWallet {
     async rejectTransaction() {
         const page = await this.notificationPage();
         await this.rejectFooterAction(page);
+    }
+    async rejectTokenPermission() {
+        const page = await this.notificationPage();
+        await this.rejectFooterAction(page);
+    }
+    async approveAddToken() {
+        const page = await this.notificationPage();
+        await this.confirmFooterAction(page);
+    }
+    async addNewToken() {
+        await this.approveAddToken();
+    }
+    async rejectAddToken() {
+        const page = await this.notificationPage();
+        await this.rejectFooterAction(page);
+    }
+    async importWalletFromPrivateKey(privateKey) {
+        const normalized = normalizePrivateKey(privateKey);
+        const page = await this.preparedHome();
+        await this.openAccountPicker(page);
+        // 12.x: action button → "Import account". 13.x: add wallet → import.
+        let importOpened = false;
+        if (await clickFirstVisible([page.locator(testId('multichain-account-menu-popover-action-button'))], SHORT_TIMEOUT_MS)) {
+            importOpened = Boolean(await clickFirstVisible([page.locator(testId('multichain-account-menu-popover-add-imported-account'))], SHORT_TIMEOUT_MS));
+        }
+        if (!importOpened) {
+            // 13.x: the add-wallet button sits below the (possibly long) account
+            // list, so scroll it into view first. The wallet-type item id is
+            // "private-key".
+            const addWallet = page.locator(testId('account-list-add-wallet-button')).first();
+            await addWallet.scrollIntoViewIfNeeded({ timeout: SHORT_TIMEOUT_MS }).catch(() => undefined);
+            if (await clickFirstVisible([addWallet], DEFAULT_TIMEOUT_MS)) {
+                importOpened = Boolean(await clickFirstVisible([
+                    page.locator(testId('choose-wallet-type-private-key')),
+                    page.locator(testId('wallet-type-private-key')),
+                    page.getByText(/^(Private key|Import account)$/i),
+                ], DEFAULT_TIMEOUT_MS));
+            }
+        }
+        if (!importOpened) {
+            throw new Error('Unable to open the MetaMask import-account flow — update web3-tester for this MetaMask version.');
+        }
+        const keyFilled = await fillFirstVisible([page.locator('#private-key-box')], normalized);
+        if (!keyFilled)
+            throw new Error('Unable to find the MetaMask private key input.');
+        const confirmed = await clickFirstVisible([page.locator(testId('import-account-confirm-button'))], DEFAULT_TIMEOUT_MS);
+        if (!confirmed)
+            throw new Error('Unable to confirm the MetaMask private key import.');
+        // Success closes the dialog (the keyring import can take a moment);
+        // failure keeps it open with inline help text.
+        const dialogClosed = await isHidden(page.locator('#private-key-box'), DEFAULT_TIMEOUT_MS).catch(() => false);
+        if (!dialogClosed) {
+            const helpText = (await page.locator('.mm-help-text').first().textContent({ timeout: SHORT_TIMEOUT_MS }).catch(() => null))?.trim();
+            throw new Error(`MetaMask rejected the private key import${helpText ? `: ${helpText}` : '.'}`);
+        }
+        // The imported account becomes active.
+        this.expectedAddress = undefined;
+        await closeMetaMaskOverlay(page);
+    }
+    async addNewAccount(name) {
+        const page = await this.preparedHome();
+        await this.openAccountPicker(page);
+        // 12.x path: action button → Add account → optional name → submit.
+        if (await clickFirstVisible([page.locator(testId('multichain-account-menu-popover-action-button'))], SHORT_TIMEOUT_MS)) {
+            if (await clickFirstVisible([page.locator(testId('multichain-account-menu-popover-add-account'))], SHORT_TIMEOUT_MS)) {
+                if (name) {
+                    await fillFirstVisible([page.locator('#account-name'), page.locator(testId('account-name-input'))], name, SHORT_TIMEOUT_MS);
+                }
+                const submitted = await clickFirstVisible([
+                    page.locator(testId('submit-add-account-with-name')),
+                    page.getByRole('button', { name: /^(Add account|Create)$/i }),
+                ], DEFAULT_TIMEOUT_MS);
+                if (!submitted)
+                    throw new Error('Unable to submit the MetaMask add-account dialog.');
+                this.expectedAddress = undefined;
+                await closeMetaMaskOverlay(page);
+                return;
+            }
+            await page.keyboard.press('Escape').catch(() => undefined);
+        }
+        // 13.x multichain tree: a single add button on the first SRP wallet.
+        const added = await clickFirstVisible([page.locator(testId('add-multichain-account-button')).first()], DEFAULT_TIMEOUT_MS);
+        if (!added) {
+            throw new Error('Unable to find the MetaMask add-account control — update web3-tester for this MetaMask version.');
+        }
+        await isHidden(page.getByText(/Adding account/i), DEFAULT_TIMEOUT_MS).catch(() => undefined);
+        await waitForMetaMaskReady(page);
+        this.expectedAddress = undefined;
+        if (name) {
+            // Rename the freshly created (last) account row while the picker is up.
+            const row = accountRowLocator(page).last();
+            await this.renameAccountRow(page, row, name);
+        }
+        await page.keyboard.press('Escape').catch(() => undefined);
+        await closeMetaMaskOverlay(page);
+    }
+    async switchAccount(nameOrAddress) {
+        const page = await this.preparedHome();
+        await this.openAccountPicker(page);
+        const row = accountRowLocator(page).filter({ hasText: accountRowMatcher(nameOrAddress) }).first();
+        const clicked = await clickFirstVisible([row], DEFAULT_TIMEOUT_MS, { requireEnabled: false });
+        if (!clicked) {
+            throw new Error(`Unable to find MetaMask account "${nameOrAddress}" in the picker. On 13.x the rows show ` +
+                'names, so address matching is best-effort — prefer account names.');
+        }
+        await waitForMetaMaskReady(page);
+        this.expectedAddress = FULL_ADDRESS_PATTERN.test(nameOrAddress) ? nameOrAddress : undefined;
+        await closeMetaMaskOverlay(page);
+    }
+    async renameAccount(currentName, newName) {
+        const page = await this.preparedHome();
+        await this.openAccountPicker(page);
+        const row = accountRowLocator(page).filter({ hasText: accountRowMatcher(currentName) }).first();
+        if (!(await isVisible(row, DEFAULT_TIMEOUT_MS).catch(() => false))) {
+            throw new Error(`Unable to find MetaMask account "${currentName}" to rename.`);
+        }
+        await this.renameAccountRow(page, row, newName, currentName);
+        await page.keyboard.press('Escape').catch(() => undefined);
+        await closeMetaMaskOverlay(page);
+    }
+    async lock() {
+        const page = await this.preparedHome();
+        await this.openGlobalMenu(page);
+        const locked = await clickFirstVisible([page.locator(testId('global-menu-lock')), page.getByText(/^Lock( MetaMask)?$/i)], DEFAULT_TIMEOUT_MS);
+        if (!locked)
+            throw new Error('Unable to find the MetaMask lock action in the global menu.');
+        const lockScreen = await findVisibleLocator(metaMaskUnlockPasswordLocators(page), DEFAULT_TIMEOUT_MS);
+        if (!lockScreen)
+            throw new Error('MetaMask did not show the unlock screen after locking.');
+    }
+    async unlock(password) {
+        const target = password ?? this.walletPassword;
+        if (!target) {
+            throw new Error('unlock() needs a password — pass one or provide setup.password at launch.');
+        }
+        const page = await openExtensionHome(this.context, this.extensionId);
+        if (!(await isMetaMaskUnlockVisible(page)))
+            return;
+        await unlockMetaMask(page, target);
+    }
+    async resetAccount() {
+        const page = await this.preparedHome();
+        await this.openGlobalMenu(page);
+        const settingsOpened = await clickFirstVisible([page.locator(testId('global-menu-settings')), page.getByText(/^Settings$/i)], DEFAULT_TIMEOUT_MS);
+        if (!settingsOpened)
+            throw new Error('Unable to open MetaMask settings.');
+        await waitForMetaMaskReady(page);
+        // 12.x: Advanced tab → "Clear activity tab data".
+        if (await clickFirstVisible([page.locator(testId('advanced-setting-reset-account')).getByRole('button')], SHORT_TIMEOUT_MS)) {
+            await this.confirmResetModal(page);
+            await this.leaveSettings(page);
+            return;
+        }
+        if (await clickFirstVisible([
+            page.getByRole('tab', { name: /^Advanced$/i }),
+            page.locator('.tab-bar__tab').filter({ hasText: /^Advanced$/ }),
+        ], SHORT_TIMEOUT_MS)) {
+            if (await clickFirstVisible([
+                page.locator(testId('advanced-setting-reset-account')).getByRole('button'),
+                page.getByRole('button', { name: /Clear activity( tab)? data/i }),
+            ], SHORT_TIMEOUT_MS)) {
+                await this.confirmResetModal(page);
+                await this.leaveSettings(page);
+                return;
+            }
+        }
+        // 13.x: Developer tools tab → "Delete activity and nonce data".
+        if (await clickFirstVisible([
+            page.locator(testId('settings-tab-item-developer-tools')),
+            page.getByText(/^Developer tools$/i),
+        ], SHORT_TIMEOUT_MS)) {
+            if (await clickFirstVisible([
+                page.locator(testId('developer-options-delete-activity-and-nonce-data')).getByRole('button'),
+                page.locator(testId('developer-options-delete-activity-and-nonce-data')),
+            ], SHORT_TIMEOUT_MS)) {
+                await this.confirmResetModal(page);
+                await this.leaveSettings(page);
+                return;
+            }
+        }
+        // Fallback: the settings search (the Developer tools tab can be
+        // feature-flag hidden in production profiles).
+        if (await clickFirstVisible([page.locator(testId('settings-header-search-button'))], SHORT_TIMEOUT_MS)) {
+            await fillFirstVisible([page.locator(testId('settings-header-search-input')), page.locator('input[type="search"]')], 'Clear activity', SHORT_TIMEOUT_MS);
+            if (await clickFirstVisible([page.locator(testId('settings-search-result-item')).first()], SHORT_TIMEOUT_MS)) {
+                const cleared = await clickFirstVisible([
+                    page.locator(testId('advanced-setting-reset-account')).getByRole('button'),
+                    page.locator(testId('developer-options-delete-activity-and-nonce-data')).getByRole('button'),
+                    page.getByRole('button', { name: /Clear activity( tab)? data|Delete activity/i }),
+                ], DEFAULT_TIMEOUT_MS);
+                if (cleared) {
+                    await this.confirmResetModal(page);
+                    await this.leaveSettings(page);
+                    return;
+                }
+            }
+        }
+        throw new Error('Unable to find the MetaMask reset-account control (Clear activity / Delete activity and ' +
+            'nonce data) — update web3-tester for this MetaMask version.');
+    }
+    async toggleShowTestNetworks(on) {
+        const page = await this.preparedHome();
+        const pickerOpened = await clickFirstVisible(metaMaskNetworkPickerLocators(page), DEFAULT_TIMEOUT_MS);
+        if (!pickerOpened)
+            throw new Error('Unable to open the MetaMask network picker.');
+        await waitForMetaMaskReady(page);
+        // The 13.x network manager splits into Popular/Custom tabs and renders
+        // the test-networks section (and its toggle) under Custom. No-op on
+        // 12.x. The modal animates in, so give the click room to stabilize.
+        await wait(300);
+        await clickFirstVisible([page.getByRole('tab', { name: /^Custom$/i }), page.getByText('Custom', { exact: true })], 8_000);
+        const toggle = await findVisibleLocator([
+            // 13.x carries a testid.
+            page.locator(testId('networks-page-show-test-networks')),
+            // 12.x renders text next to a ToggleButton with no testid.
+            page
+                .getByText(/Show test networks/i)
+                .locator('xpath=following::label[contains(@class,"toggle-button")][1]'),
+            page.locator('label.toggle-button').first(),
+        ], DEFAULT_TIMEOUT_MS, { requireEnabled: false });
+        if (!toggle) {
+            throw new Error('Unable to find the MetaMask "Show test networks" toggle. MetaMask 13.x renders it only ' +
+                'when a test-chain network is configured (e.g. addNetwork() with chainId 11155111) — ' +
+                'fresh profiles ship none.');
+        }
+        if (on === undefined) {
+            await toggle.click();
+        }
+        else {
+            const current = await this.readToggleState(toggle);
+            if (current !== on) {
+                await toggle.click();
+            }
+        }
+        await waitForMetaMaskReady(page);
+        await page.keyboard.press('Escape').catch(() => undefined);
+        await closeMetaMaskOverlay(page);
+    }
+    async importToken(token) {
+        if (!FULL_ADDRESS_PATTERN.test(token.address)) {
+            throw new Error('importToken requires a 20-byte 0x token address.');
+        }
+        const page = await this.preparedHome();
+        // The token list (and its control bar) lives on the Tokens tab.
+        await clickFirstVisible([
+            page.locator(testId('account-overview__asset-tab')),
+            page.getByRole('button', { name: /^Tokens$/i }),
+        ], SHORT_TIMEOUT_MS);
+        const menuOpened = await clickFirstVisible([page.locator(testId('asset-list-control-bar-action-button'))], DEFAULT_TIMEOUT_MS);
+        if (!menuOpened)
+            throw new Error('Unable to open the MetaMask token list menu.');
+        const importClicked = await clickFirstVisible([page.locator(testId('importTokens')), page.getByText(/^Import tokens$/i)], DEFAULT_TIMEOUT_MS);
+        if (!importClicked)
+            throw new Error('Unable to open the MetaMask Import tokens dialog.');
+        await clickFirstVisible([
+            page.locator(testId('import-tokens-modal-custom-token-tab')),
+            page.getByRole('tab', { name: /Custom token/i }),
+            page.getByText('Custom token', { exact: true }),
+        ], SHORT_TIMEOUT_MS);
+        if (token.networkName) {
+            const dropdownOpened = await clickFirstVisible([
+                page.locator(testId('import-tokens-drop-down-custom-import')),
+                page.locator(testId('test-import-tokens-drop-down-custom-import')),
+            ], SHORT_TIMEOUT_MS);
+            if (dropdownOpened) {
+                const picked = await clickFirstVisible([page.getByText(token.networkName, { exact: true })], DEFAULT_TIMEOUT_MS);
+                if (!picked) {
+                    throw new Error(`Unable to select network "${token.networkName}" in the token import dialog.`);
+                }
+            }
+        }
+        const addressFilled = await fillFirstVisible([page.locator(testId('import-tokens-modal-custom-address'))], token.address);
+        if (!addressFilled)
+            throw new Error('Unable to fill the token contract address.');
+        // Upstream re-render race: only fill symbol/decimals while Next is still
+        // disabled (MetaMask clears the inputs when contract metadata loads).
+        const nextButton = page.locator(testId('import-tokens-button-next')).first();
+        const deadline = Date.now() + DEFAULT_TIMEOUT_MS;
+        while (Date.now() < deadline && !(await nextButton.isEnabled().catch(() => false))) {
+            if (token.symbol) {
+                await fillFirstVisible([page.locator(testId('import-tokens-modal-custom-symbol'))], token.symbol, SHORT_TIMEOUT_MS);
+            }
+            if (token.decimals !== undefined) {
+                await fillFirstVisible([page.locator(testId('import-tokens-modal-custom-decimals'))], String(token.decimals), SHORT_TIMEOUT_MS);
+            }
+            await wait(250);
+        }
+        const next = await clickFirstVisible([nextButton], SHORT_TIMEOUT_MS);
+        if (!next) {
+            throw new Error('MetaMask never enabled the Import Tokens "Next" button — check the token address, ' +
+                'network, and (for contracts the RPC cannot read) pass symbol/decimals explicitly.');
+        }
+        const imported = await clickFirstVisible([
+            page.locator(testId('import-tokens-modal-import-button')),
+            page.getByRole('button', { name: /^Import( tokens)?$/i }),
+        ], DEFAULT_TIMEOUT_MS);
+        if (!imported)
+            throw new Error('Unable to confirm the MetaMask token import.');
+        await isHidden(page.locator(testId('import-tokens-modal-custom-address')), DEFAULT_TIMEOUT_MS).catch(() => undefined);
+        await closeMetaMaskOverlay(page);
+    }
+    async confirmTransactionAndWaitForMining(options = {}) {
+        await this.confirmTransaction({ gasSetting: options.gasSetting });
+        const timeoutMs = options.timeoutMs ?? 60_000;
+        const page = await this.preparedHome();
+        const activityOpened = await clickFirstVisible([
+            page.locator(testId('account-overview__activity-tab')),
+            page.getByRole('button', { name: /^Activity$/i }),
+        ], DEFAULT_TIMEOUT_MS);
+        if (!activityOpened)
+            throw new Error('Unable to open the MetaMask activity tab.');
+        const row = page
+            .locator('[data-testid="transaction-list-item"], [data-testid="activity-list-item"], .transaction-list-item, .activity-list-item')
+            .first();
+        const statusVisible = (status) => isVisible(page.locator(testId(`transaction-status-label--${status}`)).first(), LOCATOR_PROBE_MS).catch(() => false);
+        const deadline = Date.now() + timeoutMs;
+        let confirmed = false;
+        while (Date.now() < deadline) {
+            if ((await statusVisible('failed')) || (await statusVisible('dropped'))) {
+                throw new Error('The newest MetaMask activity entry failed or was dropped.');
+            }
+            if (await statusVisible('confirmed')) {
+                confirmed = true;
+                break;
+            }
+            // Instant-mining nodes may never render a pending state: a visible row
+            // with no pending/queued label counts as confirmed.
+            if ((await isVisible(row, LOCATOR_PROBE_MS).catch(() => false)) &&
+                !(await statusVisible('pending')) &&
+                !(await statusVisible('queued'))) {
+                confirmed = true;
+                break;
+            }
+            await wait(LOCATOR_PROBE_MS);
+        }
+        if (!confirmed) {
+            throw new Error(`Timed out after ${timeoutMs}ms waiting for the transaction to confirm in the activity tab.`);
+        }
+        // Best-effort hash read — never throws; the mining wait already passed.
+        let txHash;
+        try {
+            if (await clickFirstVisible([row], SHORT_TIMEOUT_MS, { requireEnabled: false })) {
+                await waitForMetaMaskReady(page);
+                const copied = await clickFirstVisible([
+                    page.getByRole('button', { name: /Copy transaction ID/i }),
+                    page.getByText(/Copy transaction ID/i),
+                ], SHORT_TIMEOUT_MS, { requireEnabled: false });
+                if (copied) {
+                    const pasted = await this.readClipboardViaPaste();
+                    if (isFullTxHash(pasted))
+                        txHash = pasted;
+                }
+                await closeMetaMaskOverlay(page);
+                await page.keyboard.press('Escape').catch(() => undefined);
+            }
+        }
+        catch {
+            // txHash stays undefined.
+        }
+        return { txHash };
+    }
+    // ── shared private helpers for the account/settings surface ─────────────
+    async preparedHome() {
+        const page = await this.home();
+        await waitForMetaMaskHome(page);
+        await closeMetaMaskOverlay(page);
+        return page;
+    }
+    async openAccountPicker(page) {
+        const opened = await clickFirstVisible([page.locator(testId('account-menu-icon'))], DEFAULT_TIMEOUT_MS);
+        if (!opened)
+            throw new Error('Unable to open the MetaMask account picker.');
+        await waitForMetaMaskReady(page);
+        // Let the (virtualized) account list settle before callers scroll for
+        // the add-wallet button at its foot.
+        await isVisible(accountRowLocator(page).first(), DEFAULT_TIMEOUT_MS).catch(() => undefined);
+    }
+    async openGlobalMenu(page) {
+        const opened = await clickFirstVisible([page.locator(testId('account-options-menu-button'))], DEFAULT_TIMEOUT_MS);
+        if (!opened)
+            throw new Error('Unable to open the MetaMask global menu.');
+    }
+    async renameAccountRow(page, row, newName, label) {
+        // 13.x: cell accessory → "Rename" menu item.
+        if (await clickFirstVisible([row.locator(testId('multichain-account-cell-end-accessory'))], SHORT_TIMEOUT_MS)) {
+            const renameClicked = await clickFirstVisible([
+                page.locator('.multichain-account-cell-menu-item[aria-label="Rename"]'),
+                page.getByRole('menuitem', { name: /^Rename$/i }),
+                page.getByText('Rename', { exact: true }),
+            ], SHORT_TIMEOUT_MS);
+            if (renameClicked) {
+                await this.fillAccountNameAndSave(page, newName);
+                return;
+            }
+            await page.keyboard.press('Escape').catch(() => undefined);
+        }
+        // 12.x: row options menu → Account details → editable label.
+        const menuOpened = await clickFirstVisible([
+            row.locator(testId('account-list-item-menu-button')),
+            ...(label ? [page.getByRole('button', { name: `${label} Options` })] : []),
+        ], SHORT_TIMEOUT_MS);
+        if (!menuOpened) {
+            throw new Error('Unable to open the MetaMask account row menu to rename.');
+        }
+        const detailsOpened = await clickFirstVisible([page.locator(testId('account-list-menu-details'))], DEFAULT_TIMEOUT_MS);
+        if (!detailsOpened)
+            throw new Error('Unable to open the MetaMask account details to rename.');
+        const editOpened = await clickFirstVisible([page.locator(testId('editable-label-button'))], DEFAULT_TIMEOUT_MS);
+        if (!editOpened)
+            throw new Error('Unable to open the MetaMask account name editor.');
+        await this.fillAccountNameAndSave(page, newName);
+        await closeMetaMaskOverlay(page);
+    }
+    async fillAccountNameAndSave(page, newName) {
+        const filled = await fillFirstVisible([
+            page.locator(`${testId('account-name-input')} input`),
+            page.locator(testId('account-name-input')),
+            page.locator(`${testId('editable-input')} input`),
+            page.locator(testId('editable-input')),
+        ], newName, DEFAULT_TIMEOUT_MS);
+        if (!filled)
+            throw new Error('Unable to fill the MetaMask account name input.');
+        const saved = await clickFirstVisible([
+            page.locator(testId('save-account-label-input')),
+            page.locator('.mm-button-base[aria-label="Confirm"]'),
+            page.getByRole('button', { name: /^(Confirm|Save)$/i }),
+        ], DEFAULT_TIMEOUT_MS);
+        if (!saved)
+            throw new Error('Unable to save the MetaMask account name.');
+        await waitForMetaMaskReady(page);
+    }
+    async confirmResetModal(page) {
+        // 12.x labels the confirm "Clear"; 13.x labels it "Delete".
+        const confirmed = await clickFirstVisible([
+            page.locator(testId('delete-activity-and-nonce-data-button')),
+            page.getByRole('button', { name: /^(Clear|Delete)$/i }),
+            page.locator('.modal button.btn-danger-primary'),
+        ], DEFAULT_TIMEOUT_MS);
+        if (!confirmed)
+            throw new Error('Unable to confirm the MetaMask reset-account dialog.');
+        await waitForMetaMaskReady(page);
+    }
+    async leaveSettings(page) {
+        await clickFirstVisible([page.locator(testId('settings-back-button')), page.locator('.settings-page__close-button')], SHORT_TIMEOUT_MS);
+        await page.goto(extensionUrl(this.extensionId)).catch(() => undefined);
+        await waitForMetaMaskReady(page);
+        await closeMetaMaskOverlay(page);
+    }
+    async readToggleState(toggle) {
+        const checkbox = toggle.locator('input[type="checkbox"]').first();
+        const checked = await checkbox.isChecked({ timeout: LOCATOR_PROBE_MS }).catch(() => undefined);
+        if (checked !== undefined)
+            return checked;
+        const ariaChecked = await toggle.getAttribute('aria-checked').catch(() => null);
+        if (ariaChecked === 'true' || ariaChecked === 'false')
+            return ariaChecked === 'true';
+        const className = (await toggle.getAttribute('class').catch(() => null)) ?? '';
+        if (/toggle-button--on/.test(className))
+            return true;
+        if (/toggle-button--off/.test(className))
+            return false;
+        return undefined;
     }
     async home() {
         const page = await openExtensionHome(this.context, this.extensionId);
@@ -1064,21 +1562,35 @@ export async function launchRealWallet(options) {
     });
     return {
         addNetwork: (network) => wallet.addNetwork(network),
+        addNewAccount: (name) => wallet.addNewAccount(name),
+        addNewToken: () => wallet.addNewToken(),
+        approveAddToken: () => wallet.approveAddToken(),
         approveNewNetwork: () => wallet.approveNewNetwork(),
         approveSwitchNetwork: () => wallet.approveSwitchNetwork(),
         approveTokenPermission: (approvalOptions) => wallet.approveTokenPermission(approvalOptions),
         close: () => context.close(),
         confirmSignature: () => wallet.confirmSignature(),
         confirmTransaction: (confirmationOptions) => wallet.confirmTransaction(confirmationOptions),
+        confirmTransactionAndWaitForMining: (miningOptions) => wallet.confirmTransactionAndWaitForMining(miningOptions),
         connectToDapp: (accounts) => wallet.connectToDapp(accounts),
         context,
         extensionId,
         getAccountAddress: () => wallet.getAccountAddress(),
+        importToken: (token) => wallet.importToken(token),
+        importWalletFromPrivateKey: (privateKey) => wallet.importWalletFromPrivateKey(privateKey),
+        lock: () => wallet.lock(),
+        rejectAddToken: () => wallet.rejectAddToken(),
         rejectNewNetwork: () => wallet.rejectNewNetwork(),
         rejectSignature: () => wallet.rejectSignature(),
         rejectSwitchNetwork: () => wallet.rejectSwitchNetwork(),
+        rejectTokenPermission: () => wallet.rejectTokenPermission(),
         rejectTransaction: () => wallet.rejectTransaction(),
+        renameAccount: (currentName, newName) => wallet.renameAccount(currentName, newName),
+        resetAccount: () => wallet.resetAccount(),
+        switchAccount: (nameOrAddress) => wallet.switchAccount(nameOrAddress),
         switchNetwork: (name, switchOptions) => wallet.switchNetwork(name, switchOptions),
+        toggleShowTestNetworks: (on) => wallet.toggleShowTestNetworks(on),
+        unlock: (password) => wallet.unlock(password),
         wallet,
     };
 }

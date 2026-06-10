@@ -37,3 +37,35 @@ test('passwordForSetup leaves preconfigured profiles passwordless by default', (
   expect(passwordForSetup(undefined)).toBeUndefined();
   expect(passwordForSetup({})).toBeUndefined();
 });
+
+test('normalizePrivateKey accepts 32-byte hex with or without 0x and rejects garbage', async () => {
+  const { normalizePrivateKey } = await import('../src/real-wallet.js');
+  const bare = 'a'.repeat(64);
+
+  expect(normalizePrivateKey(`0x${bare}`)).toBe(`0x${bare}`);
+  expect(normalizePrivateKey(`  ${bare} `)).toBe(bare);
+  for (const bad of ['0x1234', `0x${'g'.repeat(64)}`, '', `0x${'a'.repeat(63)}`]) {
+    expect(() => normalizePrivateKey(bad), bad).toThrow(/32-byte hex private key/);
+  }
+});
+
+test('isFullTxHash matches exactly 32-byte hashes', async () => {
+  const { isFullTxHash } = await import('../src/real-wallet.js');
+  expect(isFullTxHash(`0x${'ab'.repeat(32)}`)).toBe(true);
+  expect(isFullTxHash(`0x${'ab'.repeat(20)}`)).toBe(false);
+  expect(isFullTxHash(undefined)).toBe(false);
+  expect(isFullTxHash('not-a-hash')).toBe(false);
+});
+
+test('accountRowMatcher matches names, full addresses, and shortened row text', async () => {
+  const { accountRowMatcher } = await import('../src/real-wallet.js');
+  const address = '0x70997970C51812dc3A010C7d01b50e0d17dc79C8';
+
+  expect(accountRowMatcher('Treasury').test('Treasury $1,234')).toBe(true);
+  expect(accountRowMatcher('Treasury').test('Account 2')).toBe(false);
+
+  const byAddress = accountRowMatcher(address);
+  expect(byAddress.test(`Account 2 ${address}`)).toBe(true);
+  expect(byAddress.test('Account 2 0x7099...79c8')).toBe(true);
+  expect(byAddress.test('Account 2 0x1234...beef')).toBe(false);
+});

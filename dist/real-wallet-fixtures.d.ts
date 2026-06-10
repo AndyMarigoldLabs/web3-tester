@@ -1,3 +1,4 @@
+import { type BuildWalletProfileOptions } from './real-wallet-cache.js';
 import { type RealWalletSession, type RealWalletSetup } from './real-wallet.js';
 export type RealWalletFixtureOptions = {
     /** Wallet setup. Defaults to WEB3_TESTER_REAL_WALLET_SECRET_RECOVERY_PHRASE / _PASSWORD. */
@@ -18,6 +19,12 @@ export type RealWalletFixtureOptions = {
     baseURL?: string;
     expectedAddress?: string;
     headless?: boolean;
+    /**
+     * One-time profile customization baked into the cached profile (import
+     * keys, add accounts/networks/tokens) — Synpress defineWalletSetup-style.
+     * Ignored when an explicit profileDir bypasses the cache.
+     */
+    profileSetup?: BuildWalletProfileOptions['customize'];
 };
 export type RealWalletFixtures = {
     realWalletOptions: RealWalletFixtureOptions;

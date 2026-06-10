@@ -2,6 +2,26 @@
 
 ## Unreleased
 
+### Added — real-wallet MetaMask surface (0.3.0)
+
+- `RealWalletController` reaches Synpress v4 parity for account/token/
+  settings/activity flows across MetaMask 12.23.1 and 13.34.1:
+  `importWalletFromPrivateKey`, `addNewAccount`, `switchAccount`,
+  `renameAccount`, `lock`/`unlock`, `resetAccount`, `toggleShowTestNetworks`,
+  `importToken`, `approveAddToken`/`addNewToken`/`rejectAddToken`,
+  `rejectTokenPermission`, and `confirmTransactionAndWaitForMining`
+  (returns a best-effort `txHash`). Selectors are bundle-verified against
+  both pinned builds.
+- `buildWalletProfile({ customize })` / `realWalletOptions.profileSetup`:
+  one-time profile customization (import keys, add accounts) baked into the
+  cached profile, with `waitForExtensionStatePersisted` waiting for 13.x's
+  debounced IndexedDB flush so mutations survive profile close. The build
+  lock now heartbeats so a long customize run is not stolen as stale.
+- The opt-in smoke suite's full-journey test validates the existing flows;
+  the new account/token/settings surface tests are present but `fixme` until
+  the dual-version live selector stabilization pass (live MetaMask UI is
+  timing-sensitive and feature-flag dependent).
+
 ### Added — WalletConnect / AppKit simulation (0.3.0)
 
 - `@marigoldlabs/web3-tester/walletconnect`: `WalletConnectWallet` pairs with

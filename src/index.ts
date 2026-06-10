@@ -34,7 +34,11 @@ export {
   prepareMetaMaskExtension,
   extensionManifestVersion,
 } from './metamask-extension.js';
-export { buildWalletProfile, cloneWalletProfile } from './real-wallet-cache.js';
+export {
+  buildWalletProfile,
+  cloneWalletProfile,
+  waitForExtensionStatePersisted,
+} from './real-wallet-cache.js';
 export { DEFAULT_WALLET_PASSWORD } from './real-wallet-setup.js';
 export type {
   AnvilOptions,
@@ -74,6 +78,7 @@ export type {
   RealWalletProfile,
   RealWalletSession,
   RealWalletSetup,
+  RealWalletToken,
 } from './real-wallet.js';
 export type { PrepareMetaMaskExtensionOptions } from './metamask-extension.js';
 export type { BuildWalletProfileOptions } from './real-wallet-cache.js';

@@ -1,7 +1,7 @@
 import path from 'node:path';
 import { test as base } from '@playwright/test';
 import { prepareMetaMaskExtension } from './metamask-extension.js';
-import { buildWalletProfile, cloneWalletProfile } from './real-wallet-cache.js';
+import { buildWalletProfile, cloneWalletProfile, } from './real-wallet-cache.js';
 import { launchRealWallet, } from './real-wallet.js';
 const setupFromEnv = () => ({
     password: process.env.WEB3_TESTER_REAL_WALLET_PASSWORD || undefined,
@@ -38,6 +38,7 @@ export const test = base.extend({
                 extensionPath,
                 setup,
                 headless: options.headless,
+                customize: options.profileSetup,
             });
             profileDir = await cloneWalletProfile(cachedProfile, path.join(testInfo.outputDir, 'metamask-profile'));
         }
