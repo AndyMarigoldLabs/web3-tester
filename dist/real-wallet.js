@@ -660,31 +660,86 @@ class MetaMaskRealWallet {
         if (this.expectedAddress && await pageContainsAddress(page, this.expectedAddress)) {
             return this.expectedAddress;
         }
-        // Newer MetaMask renders only shortened addresses in the UI; the header
-        // copy button puts the full address on the clipboard, which a synthetic
-        // paste into a throwaway page can read (extension pages block evaluate
-        // via LavaMoat, normal pages do not).
-        const copied = await clickFirstVisible([page.locator(testId('app-header-copy-button'))], SHORT_TIMEOUT_MS);
-        if (copied) {
+        // Some MetaMask builds (12.x) expose a header copy button that puts the
+        // full address on the clipboard; reading it via a synthetic paste avoids
+        // the account-details modal entirely (extension pages block evaluate via
+        // LavaMoat, normal pages do not).
+        const headerCopied = await clickFirstVisible([page.locator(testId('app-header-copy-button'))], SHORT_TIMEOUT_MS);
+        if (headerCopied) {
             const pasted = await this.readClipboardViaPaste();
             if (pasted && FULL_ADDRESS_PATTERN.test(pasted))
                 return pasted;
         }
-        // Older MetaMask shows the full address in the account-details dialog.
-        const openedMenu = await clickFirstVisible(metaMaskAccountMenuLocators(page), DEFAULT_TIMEOUT_MS);
-        if (!openedMenu)
-            throw new Error('Unable to open MetaMask account options menu.');
-        const openedDetails = await clickFirstVisible([page.locator(testId('account-list-menu-details'))], DEFAULT_TIMEOUT_MS);
-        if (!openedDetails)
-            throw new Error('Unable to open MetaMask account details.');
-        const addressText = page.locator(testId('address-copy-button-text')).first();
-        await addressText.waitFor({ state: 'visible', timeout: DEFAULT_TIMEOUT_MS });
-        const address = (await addressText.textContent())?.trim();
-        await closeMetaMaskOverlay(page);
-        if (!address || !FULL_ADDRESS_PATTERN.test(address)) {
-            throw new Error('Unable to read the selected MetaMask account address from the UI.');
+        await this.openAccountDetailsModal(page);
+        // Read the full address from whichever copy affordance the modal exposes
+        // (12.x: address-copy-button-text; 13.x addresses view:
+        // multichain-address-row-copy-button). The visible text may be shortened,
+        // so prefer clicking the copy control and reading the clipboard.
+        const addressCopy = await findVisibleLocator([
+            page.locator(testId('address-copy-button-text')),
+            page.locator(testId('multichain-address-row-copy-button')),
+            page.locator(testId('address-qr-code-modal-copy-button')),
+        ], DEFAULT_TIMEOUT_MS, { requireEnabled: false });
+        if (!addressCopy) {
+            throw new Error('Unable to find the MetaMask account address in the details view.');
         }
-        return address;
+        const elementText = (await addressCopy.textContent())?.trim();
+        if (elementText && FULL_ADDRESS_PATTERN.test(elementText)) {
+            await closeMetaMaskOverlay(page);
+            return elementText;
+        }
+        await addressCopy.click().catch(() => undefined);
+        const pasted = await this.readClipboardViaPaste();
+        await closeMetaMaskOverlay(page);
+        if (pasted && FULL_ADDRESS_PATTERN.test(pasted)) {
+            return pasted;
+        }
+        throw new Error('Unable to read the selected MetaMask account address from the UI.');
+    }
+    // Opens the account address view across MetaMask UI generations. 12.x:
+    // account-options (3-dot) menu -> "Account details". 13.x multichain UI:
+    // account picker -> the selected account row's address menu -> "Addresses"
+    // (the "Account details" item there is the export-keys view, not the
+    // address).
+    async openAccountDetailsModal(page) {
+        // 12.x path.
+        if (await clickFirstVisible([page.locator(testId('account-options-menu-button'))], SHORT_TIMEOUT_MS)) {
+            if (await clickFirstVisible([page.locator(testId('account-list-menu-details'))], SHORT_TIMEOUT_MS)) {
+                return;
+            }
+            await page.keyboard.press('Escape').catch(() => undefined);
+        }
+        // 13.x multichain path. Prefer the home header's active-account address
+        // menu (default-address-menu-button) so we read the *selected* account
+        // rather than an arbitrary cell — a single SRP import derives many
+        // accounts whose picker order does not start at the active one.
+        let addressMenuOpened = await clickFirstVisible([page.locator(testId('default-address-menu-button'))], SHORT_TIMEOUT_MS);
+        if (!addressMenuOpened) {
+            const pickerOpened = await clickFirstVisible([page.locator(testId('account-menu-icon'))], DEFAULT_TIMEOUT_MS);
+            if (!pickerOpened)
+                throw new Error('Unable to open the MetaMask account picker.');
+            const expected = this.expectedAddress?.toLowerCase();
+            const selectedRow = expected
+                ? page
+                    .locator('[data-testid^="multichain-account-cell"]')
+                    .filter({ hasText: new RegExp(`${expected.slice(0, 6)}|${shortAddress(expected)}`, 'i') })
+                    .first()
+                : page.locator('[data-testid^="multichain-account-cell"]').first();
+            addressMenuOpened =
+                (await clickFirstVisible([selectedRow.locator(testId('multichain-account-cell-end-accessory'))], DEFAULT_TIMEOUT_MS)) ??
+                    (await clickFirstVisible([page.getByRole('button', { name: 'Open multichain account address menu' }).first()], SHORT_TIMEOUT_MS));
+        }
+        if (!addressMenuOpened)
+            throw new Error('Unable to open the MetaMask account address menu.');
+        const detailsOpened = await clickFirstVisible([
+            page.locator(testId('multichain-account-menu-item-addresses')),
+            page.getByRole('menuitem', { name: /^Addresses$/i }),
+            page.getByText('Addresses', { exact: true }),
+            page.locator(testId('multichain-account-menu-item-accountDetails')),
+            page.locator(testId('account-list-menu-details')),
+        ], DEFAULT_TIMEOUT_MS);
+        if (!detailsOpened)
+            throw new Error('Unable to open the MetaMask account address view.');
     }
     async readClipboardViaPaste() {
         const page = await this.context.newPage();
@@ -756,20 +811,26 @@ class MetaMaskRealWallet {
         await clickMetaMaskPromptAction(page, SHORT_TIMEOUT_MS);
         await closeMetaMaskOverlay(page);
     }
-    async switchNetwork(name) {
+    async switchNetwork(name, options = {}) {
         const page = await this.home();
         await waitForMetaMaskHome(page);
         await closeMetaMaskOverlay(page);
         const pickerOpened = await clickFirstVisible(metaMaskNetworkPickerLocators(page), DEFAULT_TIMEOUT_MS);
         if (!pickerOpened)
             throw new Error('Unable to open the MetaMask network picker.');
-        const selected = await clickFirstVisible([
-            // Network rows have historically used the network name as test id.
+        const candidates = [
+            // 13.x multichain rows are keyed by CAIP-2 chain id.
+            ...(options.chainId !== undefined
+                ? [page.locator(testId(`network-list-item-eip155:${options.chainId}`))]
+                : []),
+            // 12.x rows have historically used the network name as test id.
             page.locator(testId(name)),
             page.locator('[data-testid="network-list-item"]').filter({ hasText: name }),
+            page.locator('[data-testid^="network-list-item"]').filter({ hasText: name }),
             page.locator('.multichain-network-list-item').filter({ hasText: name }),
             page.getByText(name, { exact: true }),
-        ], DEFAULT_TIMEOUT_MS);
+        ];
+        const selected = await clickFirstVisible(candidates, DEFAULT_TIMEOUT_MS);
         if (!selected) {
             throw new Error(`Unable to select MetaMask network "${name}". Add it first with addNetwork(), and check "Show test networks" if it is a testnet.`);
         }
@@ -1004,7 +1065,7 @@ export async function launchRealWallet(options) {
         rejectSignature: () => wallet.rejectSignature(),
         rejectSwitchNetwork: () => wallet.rejectSwitchNetwork(),
         rejectTransaction: () => wallet.rejectTransaction(),
-        switchNetwork: (name) => wallet.switchNetwork(name),
+        switchNetwork: (name, switchOptions) => wallet.switchNetwork(name, switchOptions),
         wallet,
     };
 }

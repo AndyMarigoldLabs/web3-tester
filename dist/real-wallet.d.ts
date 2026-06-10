@@ -47,7 +47,9 @@ export type RealWalletController = {
     rejectSignature(): Promise<void>;
     rejectSwitchNetwork(): Promise<void>;
     rejectTransaction(): Promise<void>;
-    switchNetwork(name: string): Promise<void>;
+    switchNetwork(name: string, options?: {
+        chainId?: number;
+    }): Promise<void>;
 };
 export type RealWalletSession = RealWalletController & {
     close(): Promise<void>;

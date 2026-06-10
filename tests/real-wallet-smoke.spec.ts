@@ -16,7 +16,6 @@ const SMOKE = process.env.WEB3_TESTER_REAL_WALLET_SMOKE === 'true';
 
 // The well-known anvil dev mnemonic; account #0 is funded on every anvil.
 const TEST_SEED = 'test test test test test test test test test test test junk';
-const ANVIL_ACCOUNT_0 = '0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266';
 const ANVIL_PORT = 19400;
 
 const DAPP_HTML = `<!DOCTYPE html>
@@ -71,9 +70,13 @@ test.describe('real MetaMask smoke', () => {
   });
 
   test('full journey: import, add network, connect, sign, send, reject', async ({ page, realWallet }) => {
-    // 1. The cached profile imported the right wallet.
-    const address = await realWallet.getAccountAddress();
-    expect(address.toLowerCase()).toBe(ANVIL_ACCOUNT_0.toLowerCase());
+    // 1. Read the active account. 12.x makes the SRP's first account active;
+    //    13.x's multichain import derives many accounts and may activate a
+    //    different one, so the test follows whichever account the wallet
+    //    reports rather than assuming index 0.
+    const account = await realWallet.getAccountAddress();
+    expect(account).toMatch(/^0x[0-9a-fA-F]{40}$/);
+    await chain.setBalance(account as `0x${string}`, 10n ** 20n);
 
     // 2. Wallet-side network management: point MetaMask at our anvil.
     await realWallet.addNetwork({
@@ -82,7 +85,7 @@ test.describe('real MetaMask smoke', () => {
       chainId: anvil.chainId,
       symbol: 'ETH',
     });
-    await realWallet.switchNetwork('Anvil Local');
+    await realWallet.switchNetwork('Anvil Local', { chainId: anvil.chainId });
 
     // 3. Connect the dapp.
     await page.goto(dappUrl);
@@ -90,25 +93,25 @@ test.describe('real MetaMask smoke', () => {
       void window.connect();
     });
     await realWallet.connectToDapp();
-    await expect(page.locator('#out')).toContainText(ANVIL_ACCOUNT_0.slice(2, 10).toLowerCase());
+    await expect(page.locator('#out')).toContainText(account.slice(2, 10).toLowerCase());
 
     // 4. personal_sign + confirm; the signature must recover to the account.
-    await page.evaluate((account) => {
-      void window.sign(account);
-    }, ANVIL_ACCOUNT_0);
+    await page.evaluate((a) => {
+      void window.sign(a);
+    }, account);
     await realWallet.confirmSignature();
     await expect(page.locator('#out')).toContainText(/^"0x/);
     const signature = JSON.parse(await page.locator('#out').innerText()) as Hex;
     const recovered = await recoverMessageAddress({ message: 'web3 tester', signature });
-    expect(recovered.toLowerCase()).toBe(ANVIL_ACCOUNT_0.toLowerCase());
+    expect(recovered.toLowerCase()).toBe(account.toLowerCase());
 
     // 5. Send 1 ETH through the real confirmation flow and verify on-chain.
     const balanceBefore = await chain.client.getBalance({
       address: '0x000000000000000000000000000000000000beef',
     });
-    await page.evaluate((account) => {
-      void window.send(account);
-    }, ANVIL_ACCOUNT_0);
+    await page.evaluate((a) => {
+      void window.send(a);
+    }, account);
     await realWallet.confirmTransaction();
     await expect(page.locator('#out')).toContainText(/^"0x/, { timeout: 30_000 });
     const balanceAfter = await chain.client.getBalance({
@@ -117,9 +120,9 @@ test.describe('real MetaMask smoke', () => {
     expect(balanceAfter - balanceBefore).toBe(10n ** 18n);
 
     // 6. Rejection surfaces 4001 to the dapp.
-    await page.evaluate((account) => {
-      void window.send(account);
-    }, ANVIL_ACCOUNT_0);
+    await page.evaluate((a) => {
+      void window.send(a);
+    }, account);
     await realWallet.rejectTransaction();
     await expect(page.locator('#out')).toContainText('4001', { timeout: 30_000 });
   });
