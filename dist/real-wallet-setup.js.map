@@ -1,0 +1,1 @@
+{"version":3,"file":"real-wallet-setup.js","sourceRoot":"","sources":["../src/real-wallet-setup.ts"],"names":[],"mappings":"AAEA,MAAM,CAAC,MAAM,uBAAuB,GAAG,oBAAoB,CAAC;AAE5D,MAAM,UAAU,gBAAgB,CAAC,KAAkC;IACjE,OAAO,KAAK,EAAE,QAAQ,IAAI,CAAC,KAAK,EAAE,UAAU,CAAC,CAAC,CAAC,uBAAuB,CAAC,CAAC,CAAC,SAAS,CAAC,CAAC;AACtF,CAAC"}

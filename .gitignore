@@ -5,7 +5,6 @@ tmp/
 test-results/
 playwright-report/
 .playwright/
-dist/
 coverage/
 *.log
 .env
