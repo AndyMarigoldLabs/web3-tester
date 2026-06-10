@@ -22,6 +22,41 @@ export type SentTransactionRecord = {
 };
 /** A chain backend: any RpcClient, or an http(s) RPC URL string. */
 export type ChainBackend = RpcClient | string;
+export type AtomicCapabilityStatus = 'supported' | 'ready' | 'unsupported';
+export type Eip5792Options = {
+    /** Master switch. false = legacy wallet: all four methods throw 4200. Default: true. */
+    enabled?: boolean;
+    /** Atomic capability advertised for backed chains. Default: 'supported'. */
+    atomic?: AtomicCapabilityStatus;
+    /** Extra/override capability objects merged per chain ('0x0' = cross-chain per spec). */
+    capabilities?: Record<Hex, Record<string, unknown>>;
+    /** Batches with more calls throw 5740. Default: 100. */
+    maxCallsPerBatch?: number;
+};
+export type CallsBatchRecord = {
+    id: Hex;
+    chainId: Hex;
+    from: Address;
+    version: '2.0.0';
+    /** Execution mode actually used (the spec requires it to reflect reality). */
+    atomic: boolean;
+    /** What the dapp requested. */
+    atomicRequired: boolean;
+    capabilities?: Record<string, unknown>;
+    calls: readonly {
+        to?: Hex;
+        data?: Hex;
+        value?: Hex;
+    }[];
+    /** Submitted hashes in call order (rolled-back hashes included). */
+    txHashes: readonly Hex[];
+    /**
+     * 'atomic-rollback': something landed and everything was reverted (500).
+     * 'nothing-landed': no call made it onchain (400). Otherwise the status is
+     * computed from receipts.
+     */
+    failure?: 'atomic-rollback' | 'nothing-landed';
+};
 export type HttpRpcClientOptions = {
     /** Request timeout in ms. Defaults to viem's transport default (10s). */
     timeout?: number;
@@ -56,6 +91,12 @@ export type MockWalletControllerOptions = {
      * enable this for wallets fronting a real key.
      */
     trustDappRpcUrls?: boolean;
+    /**
+     * EIP-5792 support (wallet_getCapabilities/sendCalls/getCallsStatus/
+     * showCallsStatus). Enabled by default, like 2026 MetaMask; pass false for
+     * a legacy wallet that answers 4200.
+     */
+    eip5792?: boolean | Eip5792Options;
     providerInfo?: Partial<WalletProviderInfo>;
     additionalProviders?: readonly Partial<WalletProviderInfo>[];
     autoApprove?: boolean;
@@ -84,6 +125,14 @@ export declare class MockWalletController {
     private readonly providerEventListeners;
     private sendQueue;
     private nodeAccountsCache?;
+    private readonly eip5792;
+    private atomicStatus;
+    private upgradeRejectionArmed;
+    private readonly callBatches;
+    /** Every accepted wallet_sendCalls batch, for test assertions. */
+    readonly sentCallBatches: CallsBatchRecord[];
+    /** Ids the page passed to wallet_showCallsStatus (a headless no-op). */
+    readonly shownCallsStatusIds: Hex[];
     readonly sentTransactions: Hex[];
     readonly sentTransactionRequests: SentTransactionRecord[];
     constructor(page: Page, rpcClient: RpcClient, options: MockWalletControllerOptions);
@@ -119,6 +168,12 @@ export declare class MockWalletController {
     onProviderEvent(listener: (event: string, payload: unknown) => void): () => void;
     injectMockProvider(): Promise<void>;
     autoApprove(enabled?: boolean): void;
+    /**
+     * One-shot: the next atomicRequired wallet_sendCalls while the atomic
+     * capability is 'ready' throws 5750 (user rejected the EOA upgrade)
+     * instead of upgrading to 'supported'.
+     */
+    simulateAtomicUpgradeRejection(): void;
     /**
      * Arms approval for the next matching request while autoApprove is off —
      * the explicit per-call grant for real-key (live) wallets. Queued
@@ -169,6 +224,11 @@ export declare class MockWalletController {
     private clientForChain;
     private get activeRpcClient();
     private enqueueSend;
+    private assertEip5792Enabled;
+    private batchForId;
+    private handleSendCalls;
+    private executeBatch;
+    private buildCallsStatus;
     private consumeRule;
     private fetchNodeAccounts;
     private assertAccountsKnownToNode;

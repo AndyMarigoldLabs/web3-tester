@@ -12,6 +12,8 @@ export default defineConfig({
       name: 'library',
       testMatch: [
         '**/anvil.spec.ts',
+        '**/eip5792.spec.ts',
+        '**/eip7702.spec.ts',
         '**/erc20.spec.ts',
         '**/fixtures-multichain.spec.ts',
         '**/live-fixtures.spec.ts',

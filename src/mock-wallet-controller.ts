@@ -1,4 +1,5 @@
 import type { Frame, Page } from '@playwright/test';
+import { randomBytes } from 'node:crypto';
 import { http, toHex, type Address, type Hex } from 'viem';
 import { providerError, serializeRpcError } from './errors.js';
 import {
@@ -39,6 +40,40 @@ export type SentTransactionRecord = {
 
 /** A chain backend: any RpcClient, or an http(s) RPC URL string. */
 export type ChainBackend = RpcClient | string;
+
+export type AtomicCapabilityStatus = 'supported' | 'ready' | 'unsupported';
+
+export type Eip5792Options = {
+  /** Master switch. false = legacy wallet: all four methods throw 4200. Default: true. */
+  enabled?: boolean;
+  /** Atomic capability advertised for backed chains. Default: 'supported'. */
+  atomic?: AtomicCapabilityStatus;
+  /** Extra/override capability objects merged per chain ('0x0' = cross-chain per spec). */
+  capabilities?: Record<Hex, Record<string, unknown>>;
+  /** Batches with more calls throw 5740. Default: 100. */
+  maxCallsPerBatch?: number;
+};
+
+export type CallsBatchRecord = {
+  id: Hex;
+  chainId: Hex;
+  from: Address;
+  version: '2.0.0';
+  /** Execution mode actually used (the spec requires it to reflect reality). */
+  atomic: boolean;
+  /** What the dapp requested. */
+  atomicRequired: boolean;
+  capabilities?: Record<string, unknown>;
+  calls: readonly { to?: Hex; data?: Hex; value?: Hex }[];
+  /** Submitted hashes in call order (rolled-back hashes included). */
+  txHashes: readonly Hex[];
+  /**
+   * 'atomic-rollback': something landed and everything was reverted (500).
+   * 'nothing-landed': no call made it onchain (400). Otherwise the status is
+   * computed from receipts.
+   */
+  failure?: 'atomic-rollback' | 'nothing-landed';
+};
 
 export type HttpRpcClientOptions = {
   /** Request timeout in ms. Defaults to viem's transport default (10s). */
@@ -84,6 +119,12 @@ export type MockWalletControllerOptions = {
    * enable this for wallets fronting a real key.
    */
   trustDappRpcUrls?: boolean;
+  /**
+   * EIP-5792 support (wallet_getCapabilities/sendCalls/getCallsStatus/
+   * showCallsStatus). Enabled by default, like 2026 MetaMask; pass false for
+   * a legacy wallet that answers 4200.
+   */
+  eip5792?: boolean | Eip5792Options;
   providerInfo?: Partial<WalletProviderInfo>;
   additionalProviders?: readonly Partial<WalletProviderInfo>[];
   autoApprove?: boolean;
@@ -118,6 +159,9 @@ const SIGNING_METHODS = new Set([
   'eth_signTypedData_v3',
   'eth_signTypedData_v4',
   'personal_sign',
+  // A batch is a spend: 4100 while disconnected, approval-gated, covered by
+  // the default simulateRejection() set.
+  'wallet_sendCalls',
 ]);
 
 // Methods that open a wallet prompt in a real wallet but do not sign.
@@ -245,6 +289,16 @@ export class MockWalletController {
   // concurrently.
   private sendQueue: Promise<unknown> = Promise.resolve();
   private nodeAccountsCache?: Set<string>;
+  private readonly eip5792: Required<Pick<Eip5792Options, 'enabled' | 'maxCallsPerBatch'>> &
+    Eip5792Options;
+  private atomicStatus: AtomicCapabilityStatus;
+  private upgradeRejectionArmed = false;
+  private readonly callBatches = new Map<Hex, CallsBatchRecord>();
+
+  /** Every accepted wallet_sendCalls batch, for test assertions. */
+  readonly sentCallBatches: CallsBatchRecord[] = [];
+  /** Ids the page passed to wallet_showCallsStatus (a headless no-op). */
+  readonly shownCallsStatusIds: Hex[] = [];
 
   readonly sentTransactions: Hex[] = [];
   readonly sentTransactionRequests: SentTransactionRecord[] = [];
@@ -259,6 +313,14 @@ export class MockWalletController {
     this.connected = options.connected ?? true;
     this.approveRequests = options.autoApprove ?? true;
     this.trustDappRpcUrls = options.trustDappRpcUrls ?? false;
+    const eip5792 = typeof options.eip5792 === 'boolean' ? { enabled: options.eip5792 } : (options.eip5792 ?? {});
+    this.eip5792 = {
+      enabled: eip5792.enabled ?? true,
+      maxCallsPerBatch: eip5792.maxCallsPerBatch ?? 100,
+      atomic: eip5792.atomic,
+      capabilities: eip5792.capabilities,
+    };
+    this.atomicStatus = this.eip5792.atomic ?? 'supported';
     this.knownChainIds.add(this.chainId);
     this.chainBackends.set(this.chainId, rpcClient);
     for (const [key, backend] of Object.entries(options.chains ?? {})) {
@@ -431,6 +493,15 @@ export class MockWalletController {
 
   autoApprove(enabled = true): void {
     this.approveRequests = enabled;
+  }
+
+  /**
+   * One-shot: the next atomicRequired wallet_sendCalls while the atomic
+   * capability is 'ready' throws 5750 (user rejected the EOA upgrade)
+   * instead of upgrading to 'supported'.
+   */
+  simulateAtomicUpgradeRejection(): void {
+    this.upgradeRejectionArmed = true;
   }
 
   /**
@@ -635,6 +706,296 @@ export class MockWalletController {
       () => undefined,
     );
     return run;
+  }
+
+  private assertEip5792Enabled(method: string): void {
+    if (!this.eip5792.enabled) {
+      // Legacy-wallet posture: identical to the unknown wallet_* default.
+      throw providerError(4200, `The mock wallet does not support the method "${method}".`);
+    }
+  }
+
+  private batchForId(id: unknown): CallsBatchRecord {
+    const key = typeof id === 'string' ? (id as Hex) : undefined;
+    const record = key ? this.callBatches.get(key) : undefined;
+    if (!record) {
+      throw providerError(5730, `Unknown bundle id "${String(id)}".`);
+    }
+    return record;
+  }
+
+  private async handleSendCalls(params: readonly unknown[]): Promise<{ id: Hex }> {
+    const request = params[0] as
+      | {
+          version?: unknown;
+          id?: unknown;
+          from?: unknown;
+          chainId?: unknown;
+          atomicRequired?: unknown;
+          calls?: unknown;
+          capabilities?: Record<string, unknown>;
+        }
+      | undefined;
+
+    // Validation order per spec + MetaMask: params (-32602) -> account
+    // (4100) -> chain (5710) -> size (5740) -> id (5720) -> capabilities
+    // (5700) -> atomicity (5760/5750) -> approval (4001) -> execution.
+    if (!request || typeof request !== 'object') {
+      throw providerError(-32602, 'wallet_sendCalls requires a request object.');
+    }
+    if (request.version !== '2.0.0') {
+      // The spec assigns no code; MetaMask requires 2.0.0.
+      throw providerError(-32602, 'wallet_sendCalls requires version "2.0.0".');
+    }
+    if (typeof request.atomicRequired !== 'boolean') {
+      throw providerError(-32602, 'wallet_sendCalls requires a boolean atomicRequired.');
+    }
+    const calls = request.calls;
+    if (!Array.isArray(calls) || calls.length === 0 || calls.some((call) => !call || typeof call !== 'object')) {
+      throw providerError(-32602, 'wallet_sendCalls requires a non-empty calls array.');
+    }
+    const chainId = parseDappChainId(request.chainId);
+
+    const from = (request.from as Address | undefined) ?? this.primaryAccount;
+    if (!this.accounts.some((account) => account.toLowerCase() === String(from).toLowerCase())) {
+      throw providerError(
+        4100,
+        `The requested account ${String(from)} has not been authorized by the user.`,
+      );
+    }
+
+    // MetaMask-faithful: the batch must target the active, backed network.
+    if (chainId !== this.chainId || !this.chainBackends.has(chainId)) {
+      throw providerError(
+        5710,
+        `Chain ${chainId} is not the wallet's active chain (${this.chainId}).`,
+      );
+    }
+
+    if (calls.length > this.eip5792.maxCallsPerBatch) {
+      throw providerError(
+        5740,
+        `Batch of ${calls.length} calls exceeds the limit of ${this.eip5792.maxCallsPerBatch}.`,
+      );
+    }
+
+    let id: Hex;
+    if (request.id !== undefined) {
+      if (
+        typeof request.id !== 'string' ||
+        !/^0x[0-9a-fA-F]*$/.test(request.id) ||
+        request.id.length > 8194
+      ) {
+        throw providerError(-32602, 'wallet_sendCalls id must be a 0x-hex string of at most 4096 bytes.');
+      }
+      id = request.id as Hex;
+      if (this.callBatches.has(id)) {
+        throw providerError(5720, `Duplicate bundle id "${id}".`);
+      }
+    } else {
+      id = `0x${randomBytes(32).toString('hex')}` as Hex;
+    }
+
+    const advertised = new Set([
+      'atomic',
+      ...Object.keys(this.eip5792.capabilities?.[chainId] ?? {}),
+      ...Object.keys(this.eip5792.capabilities?.['0x0' as Hex] ?? {}),
+    ]);
+    const capabilityEntries: Array<[string, unknown]> = [
+      ...Object.entries(request.capabilities ?? {}),
+      ...calls.flatMap((call) =>
+        Object.entries((call as { capabilities?: Record<string, unknown> }).capabilities ?? {}),
+      ),
+    ];
+    for (const [name, value] of capabilityEntries) {
+      const optional = (value as { optional?: unknown } | undefined)?.optional === true;
+      if (!advertised.has(name) && !optional) {
+        throw providerError(5700, `Capability "${name}" is not supported on chain ${chainId}.`);
+      }
+    }
+
+    if (request.atomicRequired && this.atomicStatus === 'unsupported') {
+      throw providerError(5760, 'This wallet cannot execute the batch atomically.');
+    }
+    if (request.atomicRequired && this.atomicStatus === 'ready' && this.upgradeRejectionArmed) {
+      this.upgradeRejectionArmed = false;
+      throw providerError(5750, 'The user rejected the account upgrade required for atomic execution.');
+    }
+
+    // ONE approval gates the whole batch — a single approveNext arms all N
+    // calls (in live mode that is N real transactions; see docs).
+    await this.assertUserApproved('wallet_sendCalls', params);
+
+    const atomic = request.atomicRequired || this.atomicStatus !== 'unsupported';
+    const client = this.clientForChain(chainId);
+    const batchCalls = (calls as Array<{ to?: Hex; data?: Hex; value?: Hex }>).map((call) => ({
+      to: call.to,
+      data: call.data,
+      value: call.value,
+    }));
+
+    const record: CallsBatchRecord = {
+      id,
+      chainId,
+      from: from as Address,
+      version: '2.0.0',
+      atomic,
+      atomicRequired: request.atomicRequired,
+      capabilities: request.capabilities,
+      calls: batchCalls,
+      txHashes: [],
+      failure: undefined,
+    };
+
+    // The whole batch executes inside the send mutex so a concurrent
+    // page-initiated transaction can never be swallowed by the batch's
+    // snapshot/revert window.
+    await this.enqueueSend(() => this.executeBatch(record, client));
+
+    this.callBatches.set(id, record);
+    this.sentCallBatches.push(record);
+
+    if (
+      atomic &&
+      record.failure === undefined &&
+      request.atomicRequired &&
+      this.atomicStatus === 'ready'
+    ) {
+      // Emulates MetaMask's EOA -> smart-account upgrade on first use.
+      this.atomicStatus = 'supported';
+    }
+
+    return { id };
+  }
+
+  // Receipt-status-checked execution: anvil MINES reverting transactions
+  // with status 0x0 instead of erroring (no submission failure to catch), so
+  // each call's receipt is fetched synchronously under automine and a 0x0
+  // status triggers the rollback. With blockTime > 0 receipts are not
+  // synchronously available and atomic mode only rolls back submission-time
+  // failures — documented limitation.
+  private async executeBatch(record: CallsBatchRecord, client: RpcClient): Promise<void> {
+    const txHashes: Hex[] = [];
+    let landed = 0;
+    let failed = false;
+
+    let snapshotId: unknown;
+    if (record.atomic) {
+      try {
+        snapshotId = await client.request({ method: 'evm_snapshot', params: [] });
+      } catch {
+        throw providerError(
+          -32603,
+          'Atomic execution needs an anvil-backed chain (evm_snapshot failed). ' +
+            "Configure eip5792: { atomic: 'unsupported' } for live chains.",
+        );
+      }
+    }
+
+    for (const call of record.calls) {
+      const transaction: Record<string, unknown> = { from: record.from };
+      if (call.to !== undefined) transaction.to = call.to;
+      if (call.data !== undefined) transaction.data = call.data;
+      if (call.value !== undefined) transaction.value = call.value;
+
+      let hash: Hex;
+      try {
+        hash = (await client.request({
+          method: 'eth_sendTransaction',
+          params: [transaction],
+        })) as Hex;
+      } catch {
+        failed = true;
+        break;
+      }
+
+      txHashes.push(hash);
+      this.sentTransactions.push(hash);
+      this.sentTransactionRequests.push({
+        hash,
+        chainId: record.chainId,
+        from: record.from,
+        to: call.to,
+        data: call.data,
+        value: call.value !== undefined ? String(call.value) : undefined,
+      });
+
+      const receipt = (await client
+        .request({ method: 'eth_getTransactionReceipt', params: [hash] })
+        .catch(() => null)) as { status?: Hex } | null;
+      if (receipt) {
+        landed += 1;
+        if (receipt.status === '0x0') {
+          failed = true;
+          break;
+        }
+      }
+    }
+
+    record.txHashes = txHashes;
+
+    if (failed && record.atomic) {
+      await client
+        .request({ method: 'evm_revert', params: [snapshotId] })
+        .catch(() => undefined);
+      record.failure = landed > 0 ? 'atomic-rollback' : 'nothing-landed';
+    } else if (failed && landed === 0) {
+      record.failure = 'nothing-landed';
+    }
+    // Non-atomic with something landed: the status is computed from receipts
+    // (600 mixed / 500 all-reverted) in wallet_getCallsStatus.
+  }
+
+  private async buildCallsStatus(record: CallsBatchRecord): Promise<Record<string, unknown>> {
+    const base = {
+      version: '2.0.0',
+      id: record.id,
+      chainId: record.chainId,
+      atomic: record.atomic,
+    };
+
+    if (record.failure === 'atomic-rollback') {
+      // The rolled-back transactions no longer exist on-chain; receipts are
+      // deliberately omitted (divergence from real MetaMask, which would
+      // return one reverted 7702 receipt — documented).
+      return { ...base, status: 500 };
+    }
+    if (record.failure === 'nothing-landed') {
+      return { ...base, status: 400, receipts: [] };
+    }
+
+    const client = this.clientForChain(record.chainId);
+    const receipts = await Promise.all(
+      record.txHashes.map(
+        (hash) =>
+          client
+            .request({ method: 'eth_getTransactionReceipt', params: [hash] })
+            .catch(() => null) as Promise<Record<string, unknown> | null>,
+      ),
+    );
+
+    if (receipts.some((receipt) => receipt === null)) {
+      return { ...base, status: 100 };
+    }
+
+    const projected = receipts.map((receipt) => ({
+      logs: ((receipt!.logs as Array<Record<string, unknown>> | undefined) ?? []).map((log) => ({
+        address: log.address,
+        data: log.data,
+        topics: log.topics,
+      })),
+      status: receipt!.status,
+      blockHash: receipt!.blockHash,
+      blockNumber: receipt!.blockNumber,
+      gasUsed: receipt!.gasUsed,
+      transactionHash: receipt!.transactionHash,
+    }));
+
+    const reverted = projected.filter((receipt) => receipt.status === '0x0').length;
+    const status =
+      reverted === 0 ? 200 : reverted === projected.length ? 500 : 600;
+
+    return { ...base, status, receipts: projected };
   }
 
   private consumeRule<T extends { methods?: readonly string[] }>(
@@ -899,6 +1260,59 @@ export class MockWalletController {
       case 'wallet_watchAsset':
         await this.assertUserApproved(method, params);
         return true;
+
+      case 'wallet_getCapabilities': {
+        this.assertEip5792Enabled(method);
+        // Spec privacy rule: only answer for the connected wallet's accounts.
+        const [address, chainIdFilter] = params as [unknown, unknown];
+        const requested = typeof address === 'string' ? address.toLowerCase() : '';
+        if (
+          !this.connected ||
+          !this.accounts.some((account) => account.toLowerCase() === requested)
+        ) {
+          throw providerError(
+            4100,
+            'The requested account and/or method has not been authorized by the user.',
+          );
+        }
+
+        const response: Record<string, Record<string, unknown>> = {};
+        for (const chainId of this.chainBackends.keys()) {
+          response[chainId] = { atomic: { status: this.atomicStatus } };
+        }
+        for (const [key, value] of Object.entries(this.eip5792.capabilities ?? {})) {
+          const chainId = key === '0x0' ? ('0x0' as Hex) : normalizeChainId(key);
+          response[chainId] = { ...response[chainId], ...value };
+        }
+
+        if (Array.isArray(chainIdFilter)) {
+          const wanted = new Set(chainIdFilter.map((id) => parseDappChainId(id)));
+          for (const key of Object.keys(response)) {
+            if (key !== '0x0' && !wanted.has(key as Hex)) {
+              delete response[key];
+            }
+          }
+        }
+        return response;
+      }
+
+      case 'wallet_sendCalls': {
+        this.assertEip5792Enabled(method);
+        return this.handleSendCalls(params);
+      }
+
+      case 'wallet_getCallsStatus': {
+        this.assertEip5792Enabled(method);
+        const record = this.batchForId(params[0]);
+        return this.buildCallsStatus(record);
+      }
+
+      case 'wallet_showCallsStatus': {
+        this.assertEip5792Enabled(method);
+        const record = this.batchForId(params[0]);
+        this.shownCallsStatusIds.push(record.id);
+        return null;
+      }
 
       case 'metamask_getProviderState':
         return {

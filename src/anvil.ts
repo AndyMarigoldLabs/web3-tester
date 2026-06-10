@@ -18,6 +18,8 @@ import {
   type WalletActions,
 } from 'viem';
 import { foundry } from 'viem/chains';
+import { privateKeyToAccount } from 'viem/accounts';
+import type { Account, SignedAuthorization } from 'viem';
 import { TEST_ERC20_ABI, TEST_ERC20_BYTECODE } from './contracts/test-erc20.js';
 import { dealErc20, getErc20Balance, type DealErc20Options, type Erc20SlotInfo } from './erc20.js';
 import type { JsonRpcRequest, RpcClient } from './types.js';
@@ -54,6 +56,32 @@ export type DeployedErc20 = DeployedContract & {
   symbol: string;
   decimals: number;
 };
+
+export type ChainAuthorizationOptions = {
+  /** Authority: a viem local account or a raw private key. */
+  account: Account | Hex;
+  /** The delegate contract; the zero address revokes. */
+  contractAddress: Address;
+  nonce?: number;
+  /** Default: this chain's id. 0 = valid on any chain. */
+  chainId?: number;
+  /** 'self' when the authority submits its own type-4 tx (nonce+1 rules). */
+  executor?: 'self';
+};
+
+export type DelegateOptions = {
+  /** Authority whose key signs the authorization. */
+  account: Account | Hex;
+  contractAddress: Address;
+  /** Unlocked anvil account paying gas. Default: accounts()[0]. */
+  sponsor?: Address;
+};
+
+const ZERO_ADDRESS = '0x0000000000000000000000000000000000000000' as const;
+const EIP7702_DESIGNATOR_PREFIX = '0xef0100';
+
+const toLocalAccount = (account: Account | Hex): Account =>
+  typeof account === 'string' ? privateKeyToAccount(account) : account;
 
 export type AnvilOptions = {
   runtime?: 'binary' | 'docker';
@@ -488,5 +516,81 @@ export class ChainController implements RpcClient {
 
   async setNonce(address: Address, nonce: number): Promise<void> {
     await this.client.setNonce({ address, nonce });
+  }
+
+  // ── EIP-7702 helpers ────────────────────────────────────────────────────
+  // There is no anvil_signAuthorization RPC and viem signs authorizations
+  // with local accounts only, hence the Account | private-key parameter
+  // (anvil's default-mnemonic keys keep tests hermetic).
+
+  async signAuthorization(options: ChainAuthorizationOptions): Promise<SignedAuthorization> {
+    const account = toLocalAccount(options.account);
+    return this.client.signAuthorization({
+      account,
+      contractAddress: options.contractAddress,
+      nonce: options.nonce,
+      chainId: options.chainId ?? this.chainId,
+      executor: options.executor,
+    } as never);
+  }
+
+  /**
+   * Signs and submits a type-4 delegation from an unlocked sponsor; resolves
+   * once the authority's code is the 0xef0100‖address designator.
+   */
+  async delegate(options: DelegateOptions): Promise<{ hash: Hex; authority: Address }> {
+    const authority = toLocalAccount(options.account);
+    const sponsor = options.sponsor ?? (await this.accounts())[0];
+    if (!sponsor) {
+      throw new Error('Anvil did not expose any default accounts.');
+    }
+
+    const selfExecuting = sponsor.toLowerCase() === authority.address.toLowerCase();
+    const authorization = await this.signAuthorization({
+      account: authority,
+      contractAddress: options.contractAddress,
+      executor: selfExecuting ? 'self' : undefined,
+    });
+
+    // Raw eth_sendTransaction with an RPC-shaped (hex) authorizationList —
+    // the sponsor is an unlocked anvil account, so the node signs the tx.
+    const hash = (await this.request({
+      method: 'eth_sendTransaction',
+      params: [
+        {
+          from: sponsor,
+          to: authority.address,
+          authorizationList: [
+            {
+              chainId: toHex(BigInt(authorization.chainId)),
+              address: authorization.address,
+              nonce: toHex(BigInt(authorization.nonce)),
+              yParity: toHex(BigInt(authorization.yParity ?? 0)),
+              r: authorization.r,
+              s: authorization.s,
+            },
+          ],
+        },
+      ],
+    })) as Hex;
+
+    await this.client.waitForTransactionReceipt({ hash });
+    return { hash, authority: authority.address };
+  }
+
+  /** Authorization to the zero address: resets the authority's code to 0x. */
+  async revokeDelegation(
+    options: Omit<DelegateOptions, 'contractAddress'>,
+  ): Promise<{ hash: Hex; authority: Address }> {
+    return this.delegate({ ...options, contractAddress: ZERO_ADDRESS });
+  }
+
+  /** Parses the EIP-7702 designator out of eth_getCode; null when not delegated. */
+  async getDelegation(authority: Address): Promise<Address | null> {
+    const code = await this.client.getCode({ address: authority });
+    if (!code || !code.toLowerCase().startsWith(EIP7702_DESIGNATOR_PREFIX)) {
+      return null;
+    }
+    return `0x${code.slice(EIP7702_DESIGNATOR_PREFIX.length)}` as Address;
   }
 }

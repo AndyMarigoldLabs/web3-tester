@@ -2,8 +2,12 @@ import { spawn } from 'node:child_process';
 import { once } from 'node:events';
 import { createTestClient, http, publicActions, toHex, walletActions, } from 'viem';
 import { foundry } from 'viem/chains';
+import { privateKeyToAccount } from 'viem/accounts';
 import { TEST_ERC20_ABI, TEST_ERC20_BYTECODE } from './contracts/test-erc20.js';
 import { dealErc20, getErc20Balance } from './erc20.js';
+const ZERO_ADDRESS = '0x0000000000000000000000000000000000000000';
+const EIP7702_DESIGNATOR_PREFIX = '0xef0100';
+const toLocalAccount = (account) => typeof account === 'string' ? privateKeyToAccount(account) : account;
 const DEFAULT_MNEMONIC = 'test test test test test test test test test test test junk';
 const LOOPBACK_HOST_PATTERN = /^(127(\.\d{1,3}){3}|localhost|::1|\[::1\])$/i;
 const DEFAULT_FOUNDRY_DOCKER_IMAGE = 'ghcr.io/foundry-rs/foundry:latest';
@@ -322,6 +326,72 @@ export class ChainController {
     }
     async setNonce(address, nonce) {
         await this.client.setNonce({ address, nonce });
+    }
+    // ── EIP-7702 helpers ────────────────────────────────────────────────────
+    // There is no anvil_signAuthorization RPC and viem signs authorizations
+    // with local accounts only, hence the Account | private-key parameter
+    // (anvil's default-mnemonic keys keep tests hermetic).
+    async signAuthorization(options) {
+        const account = toLocalAccount(options.account);
+        return this.client.signAuthorization({
+            account,
+            contractAddress: options.contractAddress,
+            nonce: options.nonce,
+            chainId: options.chainId ?? this.chainId,
+            executor: options.executor,
+        });
+    }
+    /**
+     * Signs and submits a type-4 delegation from an unlocked sponsor; resolves
+     * once the authority's code is the 0xef0100‖address designator.
+     */
+    async delegate(options) {
+        const authority = toLocalAccount(options.account);
+        const sponsor = options.sponsor ?? (await this.accounts())[0];
+        if (!sponsor) {
+            throw new Error('Anvil did not expose any default accounts.');
+        }
+        const selfExecuting = sponsor.toLowerCase() === authority.address.toLowerCase();
+        const authorization = await this.signAuthorization({
+            account: authority,
+            contractAddress: options.contractAddress,
+            executor: selfExecuting ? 'self' : undefined,
+        });
+        // Raw eth_sendTransaction with an RPC-shaped (hex) authorizationList —
+        // the sponsor is an unlocked anvil account, so the node signs the tx.
+        const hash = (await this.request({
+            method: 'eth_sendTransaction',
+            params: [
+                {
+                    from: sponsor,
+                    to: authority.address,
+                    authorizationList: [
+                        {
+                            chainId: toHex(BigInt(authorization.chainId)),
+                            address: authorization.address,
+                            nonce: toHex(BigInt(authorization.nonce)),
+                            yParity: toHex(BigInt(authorization.yParity ?? 0)),
+                            r: authorization.r,
+                            s: authorization.s,
+                        },
+                    ],
+                },
+            ],
+        }));
+        await this.client.waitForTransactionReceipt({ hash });
+        return { hash, authority: authority.address };
+    }
+    /** Authorization to the zero address: resets the authority's code to 0x. */
+    async revokeDelegation(options) {
+        return this.delegate({ ...options, contractAddress: ZERO_ADDRESS });
+    }
+    /** Parses the EIP-7702 designator out of eth_getCode; null when not delegated. */
+    async getDelegation(authority) {
+        const code = await this.client.getCode({ address: authority });
+        if (!code || !code.toLowerCase().startsWith(EIP7702_DESIGNATOR_PREFIX)) {
+            return null;
+        }
+        return `0x${code.slice(EIP7702_DESIGNATOR_PREFIX.length)}`;
     }
 }
 //# sourceMappingURL=anvil.js.map

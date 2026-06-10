@@ -1,4 +1,5 @@
 import { type Abi, type Address, type Chain, type Hex, type PublicActions, type TestClient, type TransactionReceipt, type Transport, type WalletActions } from 'viem';
+import type { Account, SignedAuthorization } from 'viem';
 import { TEST_ERC20_ABI } from './contracts/test-erc20.js';
 import { type DealErc20Options } from './erc20.js';
 import type { JsonRpcRequest, RpcClient } from './types.js';
@@ -30,6 +31,24 @@ export type DeployedErc20 = DeployedContract & {
     name: string;
     symbol: string;
     decimals: number;
+};
+export type ChainAuthorizationOptions = {
+    /** Authority: a viem local account or a raw private key. */
+    account: Account | Hex;
+    /** The delegate contract; the zero address revokes. */
+    contractAddress: Address;
+    nonce?: number;
+    /** Default: this chain's id. 0 = valid on any chain. */
+    chainId?: number;
+    /** 'self' when the authority submits its own type-4 tx (nonce+1 rules). */
+    executor?: 'self';
+};
+export type DelegateOptions = {
+    /** Authority whose key signs the authorization. */
+    account: Account | Hex;
+    contractAddress: Address;
+    /** Unlocked anvil account paying gas. Default: accounts()[0]. */
+    sponsor?: Address;
 };
 export type AnvilOptions = {
     runtime?: 'binary' | 'docker';
@@ -92,5 +111,21 @@ export declare class ChainController implements RpcClient {
     setStorageAt(address: Address, slot: Hex | bigint | number, value: Hex | bigint): Promise<void>;
     setCode(address: Address, bytecode: Hex): Promise<void>;
     setNonce(address: Address, nonce: number): Promise<void>;
+    signAuthorization(options: ChainAuthorizationOptions): Promise<SignedAuthorization>;
+    /**
+     * Signs and submits a type-4 delegation from an unlocked sponsor; resolves
+     * once the authority's code is the 0xef0100‖address designator.
+     */
+    delegate(options: DelegateOptions): Promise<{
+        hash: Hex;
+        authority: Address;
+    }>;
+    /** Authorization to the zero address: resets the authority's code to 0x. */
+    revokeDelegation(options: Omit<DelegateOptions, 'contractAddress'>): Promise<{
+        hash: Hex;
+        authority: Address;
+    }>;
+    /** Parses the EIP-7702 designator out of eth_getCode; null when not delegated. */
+    getDelegation(authority: Address): Promise<Address | null>;
 }
 //# sourceMappingURL=anvil.d.ts.map

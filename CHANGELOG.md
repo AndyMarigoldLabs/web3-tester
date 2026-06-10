@@ -2,6 +2,32 @@
 
 ## Unreleased
 
+### Added — EIP-5792 batch calls + EIP-7702 (0.3.0)
+
+- Mock wallet implements the four EIP-5792 methods with Final-spec error
+  codes (57xx) and status codes (100/200/400/500/600): per-chain
+  `wallet_getCapabilities`, `wallet_sendCalls` with one approval gating the
+  whole batch, receipt-status-checked execution (anvil mines reverts as
+  status 0x0 — the loop verifies each receipt) with `evm_snapshot`/`revert`
+  atomic rollback, `wallet_getCallsStatus` with real projected receipts, and
+  `wallet_showCallsStatus` recording. `wallet.sentCallBatches`,
+  `simulateAtomicUpgradeRejection()`, and the `ready`→`supported` upgrade
+  emulate MetaMask's EOA-upgrade flow. Configure via
+  `walletOptions.eip5792`; no competitor covers this.
+- `ChainController` EIP-7702 helpers: `signAuthorization`, `delegate`,
+  `revokeDelegation`, `getDelegation` — real type-4 delegations on anvil's
+  default hardfork, hermetically.
+- `PrivateKeyRpcClient.signAuthorization()` and `authorizationList`
+  passthrough in `eth_sendTransaction` (previously silently dropped).
+
+Behavior changes (0.3.0 migration):
+
+- EIP-5792 is advertised by default in mock mode: dapps probing
+  `wallet_getCapabilities` (wagmi/viem do automatically) now take the
+  `sendCalls` path instead of falling back to `eth_sendTransaction`. Pass
+  `walletOptions: { eip5792: false }` for the legacy posture. Live fixtures
+  keep it disabled by default.
+
 ### Added — ERC-20 deal + deployment helpers (0.3.0)
 
 - `chain.dealErc20(token, account, amount, options?)` — forge-std `deal`

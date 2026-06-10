@@ -18,6 +18,41 @@ const normalizeMessage = (message) => {
     return hex ? { raw: hex } : String(message ?? '');
 };
 const parseParams = (request) => Array.isArray(request.params) ? [...request.params] : [];
+// Dapp-supplied authorization entries are RPC-shaped (hex chainId/nonce/
+// yParity) while viem's sendTransaction expects numbers — a silent
+// passthrough would RLP-encode garbage, so malformed entries fail loudly.
+const parseAuthorizationList = (value) => {
+    if (value === undefined) {
+        return undefined;
+    }
+    if (!Array.isArray(value)) {
+        throw new Error('authorizationList must be an array.');
+    }
+    return value.map((entry, index) => {
+        const item = (entry ?? {});
+        const address = (item.address ?? item.contractAddress);
+        if (typeof address !== 'string' || !address.startsWith('0x')) {
+            throw new Error(`authorizationList[${index}] needs an address.`);
+        }
+        const toNumber = (raw, name) => {
+            if (typeof raw === 'number') {
+                return raw;
+            }
+            if (typeof raw === 'string' && raw.startsWith('0x')) {
+                return Number(BigInt(raw));
+            }
+            throw new Error(`authorizationList[${index}].${name} must be a number or 0x-hex string.`);
+        };
+        return {
+            address: address,
+            chainId: toNumber(item.chainId, 'chainId'),
+            nonce: toNumber(item.nonce, 'nonce'),
+            r: item.r,
+            s: item.s,
+            yParity: toNumber(item.yParity ?? 0, 'yParity'),
+        };
+    });
+};
 export class PrivateKeyRpcClient {
     account;
     chain;
@@ -122,6 +157,7 @@ export class PrivateKeyRpcClient {
                     maxPriorityFeePerGas: transaction.maxPriorityFeePerGas
                         ? BigInt(transaction.maxPriorityFeePerGas)
                         : undefined,
+                    authorizationList: parseAuthorizationList(transaction.authorizationList),
                 };
                 const hash = await this.walletClient.sendTransaction(request);
                 this.sentTransactions.push(hash);
@@ -136,6 +172,16 @@ export class PrivateKeyRpcClient {
             default:
                 return this.publicClient.request(request);
         }
+    }
+    /** Signs an EIP-7702 authorization with this client's local account. */
+    async signAuthorization(options) {
+        return this.walletClient.signAuthorization({
+            account: this.account,
+            contractAddress: options.contractAddress,
+            chainId: options.chainId,
+            nonce: options.nonce,
+            executor: options.executor,
+        });
     }
     // A mismatched rpcUrl/chain pair must fail loudly before anything is
     // broadcast; success is cached, failures retry so a transient RPC error

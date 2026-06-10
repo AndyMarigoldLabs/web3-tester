@@ -333,6 +333,45 @@ best-effort under `anvil --auto-impersonate`). Impersonated accounts
 them — sends work, but `personal_sign`/typed-data still fail node-side with
 `-32602` since anvil holds no key.
 
+### EIP-5792 batch calls
+
+Enabled by default (like 2026 MetaMask): `wallet_getCapabilities` answers per
+backed chain with `{ atomic: { status } }` (configure via
+`eip5792: { atomic, capabilities, maxCallsPerBatch }`, or `eip5792: false`
+for a legacy wallet that returns `4200`). `wallet_sendCalls` validates
+MetaMask-faithfully — `-32602` malformed/wrong version, `4100` foreign
+`from`, `5710` non-active chain, `5720` duplicate id, `5740` oversize,
+`5700` unknown non-optional capability, `5760` atomic-unsupported, `5750`
+upgrade rejection (arm with `wallet.simulateAtomicUpgradeRejection()`) —
+then **one** approval gates the whole batch (`approveNext('wallet_sendCalls')`
+arms all N calls; in live mode that would be N real transactions, which is
+why live fixtures ship `eip5792: false`).
+
+Execution is receipt-status-checked: anvil mines reverting calls with status
+`0x0`, so each call's receipt is verified and an atomic batch is rolled back
+via `evm_snapshot`/`evm_revert` on the first failure. `wallet_getCallsStatus`
+returns spec codes — `100` pending, `200` confirmed, `400` nothing landed,
+`500` reverted completely (receipts omitted for rolled-back atomic batches —
+a documented divergence from real MetaMask's single 7702 receipt), `600`
+partial. Batches are recorded in `wallet.sentCallBatches` (and each call in
+`sentTransactions`). With `blockTime > 0`, receipts are not synchronously
+available: atomic mode then only rolls back submission-time failures, and
+status stays `100` until mining. A `ready` wallet upgrades to `supported`
+after its first successful `atomicRequired` batch.
+
+### EIP-7702 helpers (ChainController)
+
+`chain.signAuthorization({ account, contractAddress, nonce?, chainId?, executor? })`,
+`chain.delegate({ account, contractAddress, sponsor? })` (type-4 tx from an
+unlocked sponsor; `sponsor === authority` self-executes with viem's nonce+1
+handling), `chain.revokeDelegation({ account })` (zero-address authorization),
+and `chain.getDelegation(authority)` (parses the `0xef0100‖address`
+designator, `null` when not delegated). `account` is a viem local account or
+a raw private key — anvil's default-mnemonic keys keep tests hermetic.
+`PrivateKeyRpcClient` now maps `authorizationList` through
+`eth_sendTransaction` (hex→number coercion, loud on malformed entries) and
+exposes `signAuthorization()` for live 7702 tests.
+
 Multi-chain routing: every forwarded method (reads, `eth_sendTransaction`,
 `eth_sendRawTransaction`, signing) goes to the backend registered for the
 wallet's current chain. Switching to a known-but-unbacked chain succeeds

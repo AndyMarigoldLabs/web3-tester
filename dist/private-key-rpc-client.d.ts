@@ -22,6 +22,13 @@ export declare class PrivateKeyRpcClient implements RpcClient {
     private rpcChainVerified;
     constructor(options: PrivateKeyRpcClientOptions);
     request(request: JsonRpcRequest): Promise<unknown>;
+    /** Signs an EIP-7702 authorization with this client's local account. */
+    signAuthorization(options: {
+        contractAddress: Hex;
+        chainId?: number;
+        nonce?: number;
+        executor?: 'self';
+    }): Promise<import("viem").SignAuthorizationReturnType>;
     private assertRpcChainMatches;
 }
 //# sourceMappingURL=private-key-rpc-client.d.ts.map

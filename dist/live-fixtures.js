@@ -49,6 +49,10 @@ export function createLiveFixtures(defaults = {}) {
                 // only frames on the dapp's own origin can reach the wallet at all.
                 autoApprove: false,
                 connected: true,
+                // EIP-5792 stays off over a real key: capability-probing dapps keep
+                // the eth_sendTransaction fallback with per-transaction arming,
+                // capping a bare approveNext() at one real transaction.
+                eip5792: false,
                 ...(baseURL ? { allowedOrigins: [baseURL] } : {}),
                 // Masquerade as MetaMask by default so production wallet selectors
                 // (wagmi / EIP-6963) detect the injected provider unmodified.
