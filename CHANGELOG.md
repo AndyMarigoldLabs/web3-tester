@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+### Packaging
+
+- The package is now explicitly private (`"private": true`): it stays
+  UNLICENSED and is consumed from git (committed `dist/`), resolving the
+  prior `UNLICENSED` + `private: false` contradiction.
+
 ### Security
 
 - **Live wallets are now deny-by-default** (breaking): `createLiveFixtures`

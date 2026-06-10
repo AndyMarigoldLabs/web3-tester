@@ -48,8 +48,15 @@ git commit -m "Document and package Web3 tester"
 git push -u origin main
 ```
 
-## Publish
+## Distribute
+
+The package is deliberately private (`"private": true`, UNLICENSED): npm
+refuses to publish it. Consumers install straight from git — `dist/` is
+committed and CI gates on its freshness:
 
 ```bash
-npm publish --access public
+npm install git+https://github.com/AndyMarigoldLabs/web3-tester.git#<tag-or-sha>
 ```
+
+If it ever goes public, pick a license (MIT/Apache-2.0), flip `private`, and
+replace this section with `npm publish --access public`.
