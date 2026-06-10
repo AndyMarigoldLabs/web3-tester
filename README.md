@@ -125,9 +125,11 @@ await wallet.close();
 MetaMask version pinning: selectors are maintained against
 `DEFAULT_METAMASK_VERSION` (currently 12.23.1) and validated by the opt-in
 smoke suite (`WEB3_TESTER_REAL_WALLET_SMOKE=true npm test`). Override with
-`WEB3_TESTER_METAMASK_VERSION` at your own risk. MetaMask 13.x cannot be used
-for fresh-profile onboarding (its social-login onboarding does not complete
-under automation); it works with a preconfigured persistent profile.
+`WEB3_TESTER_METAMASK_VERSION` at your own risk. MetaMask 13.x onboards and
+persists correctly under automation (the adapter handles 13.x's side-panel
+completion screen and its debounced IndexedDB writes), but 13.x's "multichain"
+UI redesign renames the account/network/details selectors the post-onboarding
+helpers rely on, so it needs a selector pass before it can be the default.
 
 ## Local Development
 

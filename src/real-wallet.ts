@@ -702,7 +702,7 @@ async function importMetaMaskWallet(page: Page, setup: RealWalletSetup) {
   );
   if (!passwordSubmitted) throw new Error('Unable to submit MetaMask import password.');
 
-  await finishMetaMaskOnboarding(page);
+  await finishMetaMaskOnboarding(page, password);
 }
 
 async function unlockMetaMask(page: Page, password: string) {
@@ -727,37 +727,41 @@ async function unlockMetaMaskIfNeeded(page: Page, password: string | undefined) 
   return true;
 }
 
-async function finishMetaMaskOnboarding(page: Page) {
+async function finishMetaMaskOnboarding(page: Page, password: string) {
   for (let attempt = 0; attempt < 6; attempt += 1) {
     await waitForMetaMaskReady(page);
     const actions = [...metaMaskPromptActions(page), ...metaMaskTextPromptActions(page)];
     const onSetupScreen =
       isOnboardingRoute(page.url()) ||
       Boolean(await findVisibleLocator(actions, SHORT_TIMEOUT_MS));
-    if (!onSetupScreen) return;
+    if (!onSetupScreen) break;
 
     const advanced = await clickMetaMaskPromptAction(page, 5_000);
     if (!advanced) break;
   }
 
-  // MetaMask 13.x can leave the tab parked on #/onboarding/completion with a
-  // disabled "Open wallet" button after the click registers; the vault is
-  // ready at that point, so route the tab to the wallet home directly. If
-  // onboarding genuinely is not finished, MetaMask redirects back and the
-  // home check below still fails loudly.
+  // MetaMask 13.x defaults to opening the wallet in Chrome's side panel, so
+  // clicking "Open wallet" disables the button and leaves the onboarding tab
+  // parked on #/onboarding/completion (Playwright can't drive the side
+  // panel). Route the tab to the wallet home ourselves.
   if (isOnboardingRoute(page.url())) {
     const homeUrl = page.url().split('#')[0];
     await page.goto(homeUrl).catch(() => undefined);
     await waitForMetaMaskReady(page);
+    // Navigating away from completion can re-lock the freshly created vault.
+    await unlockMetaMaskIfNeeded(page, password);
   }
 
-  if (await waitForMetaMaskHome(page, 10_000)) return;
-  if (
-    isOnboardingRoute(page.url()) ||
-    (await findVisibleLocator([...metaMaskPromptActions(page), ...metaMaskTextPromptActions(page)], SHORT_TIMEOUT_MS))
-  ) {
+  if (!(await waitForMetaMaskHome(page, DEFAULT_TIMEOUT_MS))) {
     throw new Error('MetaMask wallet import did not complete onboarding.');
   }
+
+  // MetaMask 13.x persists state to IndexedDB asynchronously with a debounced
+  // write. The vault and completedOnboarding flag only reach disk once the
+  // wallet has sat on a working home screen for a moment — closing/relaunching
+  // the profile before then silently replays onboarding. Dwell to let the
+  // write flush before the caller tears the context down.
+  await page.waitForTimeout(3_000);
 }
 
 class MetaMaskRealWallet implements RealWalletController {
