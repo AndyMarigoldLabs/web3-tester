@@ -21,12 +21,24 @@ Fixtures:
 | Fixture | Scope | Description |
 | --- | --- | --- |
 | `wallet` | test | `MockWalletController` injected into the page before app scripts run. |
-| `chain` | worker | `ChainController` connected to the worker's Anvil node. |
-| `anvil` | worker | Running `AnvilInstance`. |
+| `chain` | worker | `ChainController` connected to the worker's primary Anvil node. |
+| `chains` | worker | `ReadonlyMap<number, ChainController>` over every running chain, primary included. |
+| `anvil` | worker | Running primary `AnvilInstance`. |
+| `extraAnvils` | worker | `ReadonlyMap<number, AnvilInstance>` for the `extraChains` instances. |
 | `walletOptions` | option | Per-test overrides for wallet identity and behavior. |
 | `anvilOptions` | option | Worker-level Anvil runtime overrides. |
+| `extraChains` | option (worker) | `AnvilChainSpec[]` — one extra Anvil per entry, on its own chain id. |
 
-Each `wallet` test snapshots chain state before test code runs and reverts after the test finishes.
+Each `wallet` test snapshots the state of **every** running chain before test
+code runs and reverts all of them after the test finishes.
+
+Multi-chain: `test.use({ extraChains: [{ chainId: 84532 }] })` boots one extra
+Anvil per worker (inheriting `anvilOptions` — runtime, executable, image — with
+a fixture-managed port in the band `ANVIL_PORT+1000 + workerIndex*20 + index`).
+The wallet is wired so a dapp-driven `wallet_switchEthereumChain` routes all
+forwarded RPC to that chain's node, and `chains.get(84532)` gives the matching
+`ChainController`. User-supplied `walletOptions.chains` entries merge over the
+fixture extras (user wins per key; extras are never silently dropped).
 
 ## Live Fixtures
 
@@ -100,6 +112,26 @@ export const test = createLiveFixtures({
   chain: baseSepolia,
   privateKeyEnv: 'BASE_QA_PRIVATE_KEY',
   walletOptions: { autoApprove: true },
+});
+```
+
+Multi-chain live testing composes through `walletOptions.chains` — one
+`PrivateKeyRpcClient` per extra chain, each enforcing its own testnet guard
+and RPC chain-id verification:
+
+```ts
+test.use({
+  liveOptions: {
+    walletOptions: {
+      chains: {
+        [baseSepolia.id]: new PrivateKeyRpcClient({
+          privateKey,
+          chain: baseSepolia,
+          rpcUrl: process.env.BASE_SEPOLIA_RPC_URL,
+        }),
+      },
+    },
+  },
 });
 ```
 
@@ -221,6 +253,14 @@ const wallet = new MockWalletController(page, rpcClient, {
   chainId: 31337,
   autoApprove: true,
   connected: true,
+  // Optional: more chains the wallet can switch to, keyed by chain id. Each
+  // backend is an RpcClient (ChainController, PrivateKeyRpcClient, …) or an
+  // http(s) RPC URL string (wrapped via httpRpcClient). The positional
+  // rpcClient stays the backend for `chainId`.
+  chains: { 84532: otherChainController, 10: 'http://127.0.0.1:19703' },
+  // Optional: honor dapp-supplied rpcUrls[0] in wallet_addEthereumChain
+  // after a bounded eth_chainId probe. Never enable over a real key.
+  trustDappRpcUrls: false,
   // Optional, http(s) origins only: the provider installs (and the bridge
   // answers) only in frames on these origins; everything else sees no
   // window.ethereum and gets 4100 from the bridge. Same-origin about:blank
@@ -253,16 +293,34 @@ Methods:
 | `setAccounts(accounts)` | Updates accounts and emits `accountsChanged`. |
 | `disconnect()` | Emits `accountsChanged` and `disconnect`; signing while disconnected throws `4100`. |
 | `reconnect()` | Emits `connect` and `accountsChanged`. |
-| `switchNetwork(chainId)` | Updates chain ID, marks it known, and emits `chainChanged`. |
+| `switchNetwork(chainId)` | Updates chain ID, marks it known, and emits `chainChanged` (no event for a same-chain switch). |
+| `addChain(chainId, backend)` | Test-side chain registration (Synpress `addNetwork` analogue): no approval gate, no probe, re-registration overwrites. |
+| `backedChainIds` | Chain ids that currently have an RPC backend, canonical hex. |
+| `handleExternalRequest(request, { origin }?)` | Dispatch a request from a non-injected transport (e.g. WalletConnect) through the same approval gating; `allowedOrigins` is enforced against `origin`. |
+| `onProviderEvent(listener)` | Observe provider events node-side (fire-and-forget); returns an unsubscribe function. |
 
 Transaction recording: `sentTransactions: Hex[]` and
 `sentTransactionRequests: SentTransactionRecord[]`.
 
 Chain semantics follow MetaMask: dapp-initiated `wallet_switchEthereumChain`
-throws `4902` for unknown chains; `wallet_addEthereumChain` validates,
-registers, and switches; `wallet_revokePermissions` disconnects. Unknown
-`wallet_*` methods return `4200` instead of leaking node errors; all other
-unhandled methods are forwarded to the configured RPC client.
+validates first (`-32602`), then throws `4902` for unknown chains *before*
+any approval prompt; `wallet_addEthereumChain` requires `rpcUrls` (a
+non-empty array of valid URLs, per EIP-3085), registers, and switches;
+`wallet_revokePermissions` disconnects. Unknown `wallet_*` methods return
+`4200` instead of leaking node errors; all other unhandled methods are
+forwarded to the **active chain's** RPC backend.
+
+Multi-chain routing: every forwarded method (reads, `eth_sendTransaction`,
+`eth_sendRawTransaction`, signing) goes to the backend registered for the
+wallet's current chain. Switching to a known-but-unbacked chain succeeds
+(wallet-local `eth_chainId`/mirrors update, so wrong-network-banner tests
+work) — but forwarded calls then throw `4901` (EIP-1193 "Chain
+Disconnected") instead of silently hitting the wrong node. Transactions are
+recorded with the `chainId` they executed on. Caveats: chain-scoped node
+state (e.g. `eth_newFilter` ids) does not survive a switch — the next poll
+hits a different node; and URL-backed chains cannot service node-side
+signing (`personal_sign`, `eth_sendTransaction`) — back chains that must
+sign with Anvil or a `PrivateKeyRpcClient`.
 
 Supported wallet methods include:
 

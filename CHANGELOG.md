@@ -2,6 +2,41 @@
 
 ## Unreleased
 
+### Added — multi-chain mock routing (0.3.0)
+
+- `MockWalletControllerOptions.chains`: register extra chains keyed by chain
+  id, each backed by any `RpcClient` or an RPC URL string (new exported
+  `httpRpcClient` adapter). Forwarded RPC (reads, sends, signing) routes to
+  the **active chain's** backend; `wallet.addChain(chainId, backend)` and
+  `wallet.backedChainIds` manage the registry test-side.
+- `trustDappRpcUrls` (default false): opt-in to honoring dapp-supplied
+  `rpcUrls[0]` in `wallet_addEthereumChain` after a bounded `eth_chainId`
+  probe (EIP-3085 mismatch → `-32602`).
+- Fixtures: `test.use({ extraChains: [{ chainId }] })` boots one extra Anvil
+  per worker (port band `ANVIL_PORT+1000 + workerIndex*20 + index`,
+  inheriting `anvilOptions`); new `chains` / `extraAnvils` worker fixtures;
+  the `wallet` fixture snapshots/reverts **every** running chain per test.
+- `SentTransactionRecord.chainId` records the chain a transaction executed on.
+- Substrate for upcoming transports: `wallet.handleExternalRequest(request,
+  { origin })` (same approval gating + origin scoping as the injected
+  bridge) and `wallet.onProviderEvent(listener)`.
+
+Behavior changes (0.3.0 migration):
+
+- Forwarded calls after switching to a chain with no registered backend now
+  throw `4901` (EIP-1193 "Chain Disconnected") instead of silently hitting
+  the default node. To keep the old cosmetic behavior, alias the id
+  explicitly: `chains: { '0xaa36a7': chain }`.
+- `wallet_switchEthereumChain` validates before prompting: an unknown chain
+  returns `4902` without consuming approval (deny-mode tests that expected
+  `4001` for unknown chains must expect `4902`, matching real MetaMask).
+- `wallet_addEthereumChain` now requires `rpcUrls` (non-empty array of valid
+  URLs), like MetaMask and EIP-3085. wagmi always sends them.
+- Chain ids canonicalize to lowercase minimal hex everywhere (`eth_chainId`,
+  `chainChanged` payloads, `currentChainId`): `'0xAA36A7'` → `'0xaa36a7'`.
+- Same-chain `wallet_switchEthereumChain`/`switchNetwork` no longer emit
+  `chainChanged` (MetaMask emits only on change).
+
 ### Packaging
 
 - The package is now explicitly private (`"private": true`): it stays

@@ -37,6 +37,7 @@ test.describe('transactions through the injected wallet', () => {
     expect(wallet.sentTransactions).toEqual([hash]);
     expect(wallet.sentTransactionRequests[0]).toMatchObject({
       hash,
+      chainId: '0x7a69',
       from: wallet.primaryAccount,
       to: RECIPIENT,
     });
@@ -146,6 +147,56 @@ test.describe('chain management', () => {
     await page.goto('data:text/html,<h1>fresh page</h1>');
     await page.waitForFunction(() => window.ethereum?.chainId === '0xaa36a7');
     expect(await page.evaluate(() => window.ethereum.networkVersion)).toBe('11155111');
+  });
+
+  test('deny-mode: unknown chain returns 4902 without a prompt, known chain still needs approval', async ({ page, wallet }) => {
+    wallet.autoApprove(false);
+
+    // Validation precedes approval — real MetaMask returns 4902 for an
+    // unknown chain without ever showing a prompt.
+    const unknown = await requestFromPage(page, 'wallet_switchEthereumChain', [
+      { chainId: '0xaa36a7' },
+    ]);
+    expect((unknown as { error: ProviderErrorShape }).error.code).toBe(4902);
+
+    const known = await requestFromPage(page, 'wallet_switchEthereumChain', [
+      { chainId: wallet.currentChainId },
+    ]);
+    expect((known as { error: ProviderErrorShape }).error.code).toBe(4001);
+  });
+
+  test('wallet_addEthereumChain without valid rpcUrls is rejected (-32602)', async ({ page, wallet }) => {
+    expect(wallet.primaryAccount).toMatch(/^0x/);
+    for (const definition of [
+      { chainId: '0xaa36a7' },
+      { chainId: '0xaa36a7', rpcUrls: [] },
+      { chainId: '0xaa36a7', rpcUrls: ['not a url'] },
+    ]) {
+      const response = await requestFromPage(page, 'wallet_addEthereumChain', [definition]);
+      expect(response.ok, JSON.stringify(definition)).toBe(false);
+      expect((response as { error: ProviderErrorShape }).error.code).toBe(-32602);
+    }
+  });
+
+  test('chain ids canonicalize to lowercase minimal hex', async ({ wallet }) => {
+    await wallet.switchNetwork('0x0AA36A7');
+    expect(wallet.currentChainId).toBe('0xaa36a7');
+  });
+
+  test('forwarded calls after switching to a backend-less chain throw 4901 (behavior change)', async ({ page, wallet }) => {
+    await wallet.switchNetwork('0xaa36a7');
+
+    const blocked = await requestFromPage(page, 'eth_blockNumber');
+    expect(blocked.ok).toBe(false);
+    expect((blocked as { error: ProviderErrorShape }).error.code).toBe(4901);
+
+    // Wallet-local methods keep answering, so wrong-network-banner tests work.
+    const chainId = await requestFromPage(page, 'eth_chainId');
+    expect(chainId).toEqual({ ok: true, result: '0xaa36a7' });
+
+    // Switching back to the backed default chain restores routing.
+    await wallet.switchNetwork('0x7a69');
+    expect((await requestFromPage(page, 'eth_blockNumber')).ok).toBe(true);
   });
 });
 

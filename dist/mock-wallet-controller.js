@@ -1,6 +1,22 @@
-import { toHex } from 'viem';
+import { http, toHex } from 'viem';
 import { providerError, serializeRpcError } from './errors.js';
 import { buildInjectedProviderScript, emitterName, rpcBridgeName, } from './injected-provider.js';
+/**
+ * Adapter: EIP-1193 RpcClient over a plain JSON-RPC URL (viem http
+ * transport). URL-backed chains serve reads, eth_sendRawTransaction, and
+ * dapp-side flows; node-side signing (personal_sign, eth_sendTransaction)
+ * needs a node that signs — back those chains with Anvil or a
+ * PrivateKeyRpcClient instead.
+ */
+export function httpRpcClient(url, options = {}) {
+    const transport = http(url, {
+        retryCount: options.retryCount ?? 0,
+        timeout: options.timeout,
+    })({});
+    return {
+        request: (request) => transport.request(request),
+    };
+}
 const DEFAULT_PROVIDER_INFO = {
     uuid: '00000000-0000-4000-8000-000000000001',
     name: 'Mock Wallet',
@@ -45,7 +61,43 @@ const normalizeParams = (params) => {
     }
     return [params];
 };
-const normalizeChainId = (chainId) => typeof chainId === 'number' ? toHex(chainId) : chainId;
+// Canonical (lowercase, minimal) hex so '0xAA36A7', '0x0aa36a7', and
+// 11155111 all map to one chain-registry key. Config/test-side input throws
+// a plain Error on garbage; dapp params go through parseDappChainId instead.
+const normalizeChainId = (chainId) => {
+    try {
+        return toHex(typeof chainId === 'number' ? chainId : BigInt(chainId));
+    }
+    catch {
+        throw new Error(`Invalid chain id "${String(chainId)}".`);
+    }
+};
+const parseDappChainId = (chainId) => {
+    if (typeof chainId !== 'string' || !chainId.startsWith('0x')) {
+        throw providerError(-32602, 'Expected a 0x-prefixed chainId.');
+    }
+    try {
+        return toHex(BigInt(chainId));
+    }
+    catch {
+        throw providerError(-32602, `Invalid chainId "${chainId}".`);
+    }
+};
+// Bounded eth_chainId probe used when trustDappRpcUrls wires up a
+// dapp-supplied RPC URL — a hung endpoint must not stall the dapp's promise.
+const probeChainId = async (url, timeoutMs = 5_000) => {
+    const response = await fetch(url, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ id: 1, jsonrpc: '2.0', method: 'eth_chainId', params: [] }),
+        signal: AbortSignal.timeout(timeoutMs),
+    });
+    const body = (await response.json());
+    if (typeof body.result !== 'string') {
+        throw new Error(`No eth_chainId result from ${url}.`);
+    }
+    return toHex(BigInt(body.result));
+};
 const toOrigin = (url) => {
     try {
         return new URL(url).origin;
@@ -81,7 +133,14 @@ export class MockWalletController {
     holdQueue = [];
     approvalQueue = [];
     knownChainIds = new Set();
+    chainBackends = new Map();
+    trustDappRpcUrls;
     allowedOrigins;
+    providerEventListeners = new Set();
+    // Promise-chain mutex: forwarded sends (and, later, batch execution inside
+    // a snapshot window) must not interleave — exposeBinding handlers run
+    // concurrently.
+    sendQueue = Promise.resolve();
     sentTransactions = [];
     sentTransactionRequests = [];
     constructor(page, rpcClient, options) {
@@ -91,7 +150,17 @@ export class MockWalletController {
         this.chainId = normalizeChainId(options.chainId);
         this.connected = options.connected ?? true;
         this.approveRequests = options.autoApprove ?? true;
+        this.trustDappRpcUrls = options.trustDappRpcUrls ?? false;
         this.knownChainIds.add(this.chainId);
+        this.chainBackends.set(this.chainId, rpcClient);
+        for (const [key, backend] of Object.entries(options.chains ?? {})) {
+            const id = normalizeChainId(key);
+            if (id === this.chainId) {
+                throw new Error(`chains must not list the default chainId ${id} — the constructor's rpcClient is its backend.`);
+            }
+            this.chainBackends.set(id, typeof backend === 'string' ? httpRpcClient(backend) : backend);
+            this.knownChainIds.add(id);
+        }
         this.allowedOrigins = options.allowedOrigins?.map((entry) => {
             // Strictly http(s): a scheme-less "localhost:3000" parses as protocol
             // "localhost:" with origin "null", which would silently allowlist every
@@ -132,6 +201,44 @@ export class MockWalletController {
     }
     get currentChainId() {
         return this.chainId;
+    }
+    /** Chain ids that currently have an RPC backend, canonical hex. */
+    get backedChainIds() {
+        return [...this.chainBackends.keys()];
+    }
+    /**
+     * Test-side chain registration (Synpress addNetwork analogue): registers
+     * the backend and marks the chain known — no approval gate, no probe, and
+     * re-registration overwrites (tests may rewire).
+     */
+    addChain(chainId, backend) {
+        const id = normalizeChainId(chainId);
+        this.chainBackends.set(id, typeof backend === 'string' ? httpRpcClient(backend) : backend);
+        this.knownChainIds.add(id);
+    }
+    /**
+     * Dispatch a request arriving from a non-injected transport (e.g. a
+     * WalletConnect session). Approval gating applies exactly as for injected
+     * requests. When allowedOrigins is configured, `context.origin` is
+     * enforced; an absent origin counts as "null" and is refused.
+     */
+    async handleExternalRequest(request, context = {}) {
+        if (this.allowedOrigins) {
+            this.assertOriginAllowed(context.origin !== undefined ? toOrigin(context.origin) : 'null');
+        }
+        return this.handleRpcRequest(request);
+    }
+    /**
+     * Observe provider events (chainChanged, accountsChanged, connect,
+     * disconnect) node-side — the hook non-injected transports use to push
+     * session events. Dispatch is fire-and-forget; listener errors are
+     * swallowed. Returns an unsubscribe function.
+     */
+    onProviderEvent(listener) {
+        this.providerEventListeners.add(listener);
+        return () => {
+            this.providerEventListeners.delete(listener);
+        };
     }
     async injectMockProvider() {
         // Context-level injection so pages the dapp opens itself (window.open,
@@ -252,12 +359,27 @@ export class MockWalletController {
         await this.emit('accountsChanged', this.accounts);
     }
     async switchNetwork(chainId) {
-        this.chainId = normalizeChainId(chainId);
+        const normalized = normalizeChainId(chainId);
         // A test-driven switch counts as the user adding/approving the chain.
-        this.knownChainIds.add(this.chainId);
+        this.knownChainIds.add(normalized);
+        if (normalized === this.chainId) {
+            // MetaMask emits no chainChanged for a same-chain switch.
+            return;
+        }
+        this.chainId = normalized;
         await this.emit('chainChanged', this.chainId);
     }
     async emit(event, payload) {
+        for (const listener of this.providerEventListeners) {
+            queueMicrotask(() => {
+                try {
+                    listener(event, payload);
+                }
+                catch {
+                    // Listener errors must never break wallet state transitions.
+                }
+            });
+        }
         await Promise.all(this.page.context().pages().map((page) => page
             .evaluate(({ emitter, eventName, eventPayload }) => {
             const maybeEmitter = window[emitter];
@@ -266,6 +388,26 @@ export class MockWalletController {
             }
         }, { emitter: emitterName, eventName: event, eventPayload: payload })
             .catch(() => undefined)));
+    }
+    // The single seam every forwarded request routes through: a known-but-
+    // unbacked chain fails loudly here (EIP-1193 4901 "Chain Disconnected")
+    // instead of silently hitting the wrong node.
+    clientForChain(chainId) {
+        const client = this.chainBackends.get(chainId);
+        if (!client) {
+            throw providerError(4901, `The wallet is not connected to chain "${chainId}". It was added without an RPC backend — ` +
+                'pass it in MockWalletControllerOptions.chains, call wallet.addChain(chainId, clientOrUrl), ' +
+                'or enable trustDappRpcUrls.');
+        }
+        return client;
+    }
+    get activeRpcClient() {
+        return this.clientForChain(this.chainId);
+    }
+    enqueueSend(task) {
+        const run = this.sendQueue.then(task, task);
+        this.sendQueue = run.then(() => undefined, () => undefined);
+        return run;
     }
     consumeRule(queue, method) {
         const index = queue.findIndex((rule) => !rule.methods || rule.methods.includes(method));
@@ -345,31 +487,77 @@ export class MockWalletController {
                 this.connected = false;
                 await this.emit('accountsChanged', []);
                 return null;
+            // Per-handler order, library-wide: param validation (-32602) -> state
+            // checks (4902) -> approval -> execution. Real MetaMask returns 4902
+            // for an unknown chain without ever showing a prompt.
             case 'wallet_switchEthereumChain': {
-                await this.assertUserApproved(method, params);
                 const requestedChain = params[0];
                 if (!requestedChain?.chainId) {
                     throw providerError(-32602, 'wallet_switchEthereumChain requires a chainId.');
                 }
-                const normalized = normalizeChainId(requestedChain.chainId);
+                const normalized = parseDappChainId(requestedChain.chainId);
                 if (!this.knownChainIds.has(normalized)) {
                     throw providerError(4902, `Unrecognized chain ID "${normalized}". Try adding the chain using wallet_addEthereumChain first.`);
                 }
+                await this.assertUserApproved(method, params);
                 await this.switchNetwork(normalized);
                 return null;
             }
             case 'wallet_addEthereumChain': {
-                await this.assertUserApproved(method, params);
                 const definition = params[0];
                 if (typeof definition?.chainId !== 'string' || !definition.chainId.startsWith('0x')) {
                     throw providerError(-32602, 'wallet_addEthereumChain requires a 0x-prefixed chainId.');
                 }
-                const normalized = normalizeChainId(definition.chainId);
-                this.knownChainIds.add(normalized);
-                // MetaMask offers to switch after adding; the mock approves that too.
-                if (normalized !== this.chainId) {
-                    await this.switchNetwork(normalized);
+                const normalized = parseDappChainId(definition.chainId);
+                // EIP-3085: the wallet MUST reject when rpcUrls is missing, empty, or
+                // contains invalid URLs (MetaMask does too; wagmi always sends them).
+                const rpcUrls = definition.rpcUrls;
+                const urlsValid = Array.isArray(rpcUrls) &&
+                    rpcUrls.length > 0 &&
+                    rpcUrls.every((url) => {
+                        if (typeof url !== 'string') {
+                            return false;
+                        }
+                        try {
+                            new URL(url);
+                            return true;
+                        }
+                        catch {
+                            return false;
+                        }
+                    });
+                if (!urlsValid) {
+                    throw providerError(-32602, 'wallet_addEthereumChain requires rpcUrls: a non-empty array of valid URLs.');
                 }
+                await this.assertUserApproved(method, params);
+                // First registration wins for dapp adds: re-adding a backed chain is
+                // a no-op switch, like MetaMask.
+                if (this.trustDappRpcUrls && !this.chainBackends.has(normalized)) {
+                    const [url] = rpcUrls;
+                    // http(s) only; we deliberately allow http: (localhost Anvil is the
+                    // dominant test case), deviating from EIP-3085's https-only rule.
+                    if (!/^https?:$/.test(new URL(url).protocol)) {
+                        throw providerError(-32602, `rpcUrls[0] "${url}" is not an http(s) URL.`);
+                    }
+                    let reported;
+                    try {
+                        reported = await probeChainId(url);
+                    }
+                    catch {
+                        throw providerError(-32602, `rpcUrls[0] "${url}" is unreachable or did not answer eth_chainId.`);
+                    }
+                    if (reported !== normalized) {
+                        // EIP-3085: reject when the URL's eth_chainId does not match.
+                        throw providerError(-32602, `rpcUrls[0] reports chain id ${reported} but ${normalized} was requested.`);
+                    }
+                    this.chainBackends.set(normalized, httpRpcClient(url));
+                }
+                this.knownChainIds.add(normalized);
+                // MetaMask offers to switch after adding; the mock approves that too
+                // (wagmi verifies eth_chainId === target after an add and hard-fails
+                // if the wallet did not switch). switchNetwork skips the chainChanged
+                // emit when the chain is already active.
+                await this.switchNetwork(normalized);
                 return null;
             }
             case 'wallet_watchAsset':
@@ -384,15 +572,17 @@ export class MockWalletController {
                 };
             case 'eth_sendTransaction': {
                 await this.assertUserApproved(method, params);
+                // Capture the routed chain at approval time so a concurrent switch
+                // cannot redirect a queued send.
+                const chainId = this.chainId;
+                const client = this.activeRpcClient;
                 const transaction = { ...params[0] };
                 transaction.from ??= this.primaryAccount;
-                const hash = (await this.rpcClient.request({
-                    method,
-                    params: [transaction],
-                }));
+                const hash = (await this.enqueueSend(() => client.request({ method, params: [transaction] })));
                 this.sentTransactions.push(hash);
                 this.sentTransactionRequests.push({
                     hash,
+                    chainId,
                     from: transaction.from,
                     to: transaction.to,
                     data: transaction.data,
@@ -402,9 +592,11 @@ export class MockWalletController {
             }
             case 'eth_sendRawTransaction': {
                 await this.assertUserApproved(method, params);
-                const hash = (await this.rpcClient.request({ method, params }));
+                const chainId = this.chainId;
+                const client = this.activeRpcClient;
+                const hash = (await this.enqueueSend(() => client.request({ method, params })));
                 this.sentTransactions.push(hash);
-                this.sentTransactionRequests.push({ hash });
+                this.sentTransactionRequests.push({ hash, chainId });
                 return hash;
             }
             case 'eth_signTypedData':
@@ -413,19 +605,19 @@ export class MockWalletController {
                 // Anvil only implements v4; v3 payloads (no arrays or recursive
                 // structs) hash identically under v4 rules.
                 await this.assertUserApproved(method, params);
-                return this.rpcClient.request({ method: 'eth_signTypedData_v4', params });
+                return this.activeRpcClient.request({ method: 'eth_signTypedData_v4', params });
             case 'eth_sign':
             case 'eth_signTypedData_v4':
             case 'personal_sign':
                 await this.assertUserApproved(method, params);
-                return this.rpcClient.request({ method, params });
+                return this.activeRpcClient.request({ method, params });
             default:
                 // Unknown wallet-namespace methods are the wallet's responsibility;
                 // forwarding them to the node would leak a confusing -32601.
                 if (method.startsWith('wallet_')) {
                     throw providerError(4200, `The mock wallet does not support the method "${method}".`);
                 }
-                return this.rpcClient.request({ method, params });
+                return this.activeRpcClient.request({ method, params });
         }
     }
 }
