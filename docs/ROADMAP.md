@@ -1,7 +1,17 @@
 # Roadmap — 0.3.0 feature build-out
 
-All seven ecosystem-gap features from the 2026-06-09 library review are committed scope for 0.3.0.
-Each has an implementation-ready design that survived adversarial feasibility review; the full designs
+**Status: all seven features shipped in 0.3.0** (commits `598eb66` multichain,
+`f74beb1` multi-account, `ef26f75` deal helpers, `71eeefe` EIP-5792/7702,
+`c6a93eb` matchers, `accc7bf` WalletConnect, `fe4d409` real-wallet surface).
+The hermetic suite (159 tests) is green; the env-gated WalletConnect-relay and
+real-wallet smoke suites cover the rest. One follow-up remains: the
+real-wallet account/token/settings surface methods are implemented and
+bundle-verified but their full dual-version live smoke is `fixme` pending the
+selector-stabilization pass (live MetaMask UI is timing-sensitive and
+feature-flag dependent).
+
+All seven ecosystem-gap features from the 2026-06-09 library review were committed scope for 0.3.0.
+Each had an implementation-ready design that survived adversarial feasibility review; the full designs
 (API surfaces, behavior specs, risks, verified external facts, and the review corrections that are part
 of the spec) live in [`reports/roadmap-scoping-2026-06-10.md`](../reports/roadmap-scoping-2026-06-10.md).
 This file is the working digest: build order, binding rulings, and per-feature summaries.

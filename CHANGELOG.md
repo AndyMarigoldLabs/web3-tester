@@ -1,6 +1,24 @@
 # Changelog
 
-## Unreleased
+## 0.3.0 — 2026-06-10
+
+The ecosystem build-out: multi-chain mock routing, multi-account & two-user
+fixtures, EIP-5792 batch calls + EIP-7702, transaction assertion matchers,
+ERC-20 deal/deployment helpers, WalletConnect/AppKit simulation, and the
+real-wallet MetaMask account/token/settings surface. Designed and
+adversarially verified up front (`reports/roadmap-scoping-2026-06-10.md`),
+then built in seven phases.
+
+**Migration (mock-mode behavior changes):** forwarded calls after switching
+to a backend-less chain now throw `4901`; `wallet_switchEthereumChain`
+validates before prompting (unknown chain → `4902`, not `4001`);
+`wallet_addEthereumChain` requires `rpcUrls`; chain ids canonicalize to
+lowercase minimal hex; same-chain switches emit no `chainChanged`; wallet
+accounts are validated against the node's signers; `eth_sendTransaction`
+with an unauthorized `from` throws `4100`; EIP-5792 is advertised by default
+(`eip5792: false` restores the legacy `4200`). Live fixtures keep EIP-5792
+off. The extended `expect` type widens from `Expect<{}>` (additive at
+runtime).
 
 ### Added — real-wallet MetaMask surface (0.3.0)
 
