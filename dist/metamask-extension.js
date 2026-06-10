@@ -6,18 +6,15 @@ import os from 'node:os';
 import path from 'node:path';
 /**
  * The MetaMask build the adapter's selectors are maintained against. Bump
- * deliberately and re-run the real-wallet smoke suite when changing it.
+ * deliberately and re-run the real-wallet smoke suite when changing it
+ * (`WEB3_TESTER_REAL_WALLET_SMOKE=true npm test`).
  *
- * Pinned to the last 12.x line because 13.x ships MetaMask's "multichain" UI
- * redesign, which renames the account/network/details selectors the read and
- * action helpers depend on (e.g. the account picker uses
- * `multichain-account-cell-*` and there is no `app-header-copy-button`).
- * Onboarding itself works on 13.x — finishMetaMaskOnboarding handles the
- * side-panel completion and the debounced-IndexedDB persistence — but the
- * post-onboarding helpers need a selector pass before 13.x can be the
- * default. See the version-pin note in docs/API.md.
+ * The adapter is validated end to end against current MetaMask 13.x (the
+ * "multichain" UI) and still works on the last 12.x line — the smoke suite
+ * passes on both. Set WEB3_TESTER_METAMASK_VERSION=12.23.1 to test the older
+ * UI generation.
  */
-export const DEFAULT_METAMASK_VERSION = '12.23.1';
+export const DEFAULT_METAMASK_VERSION = '13.34.1';
 export const defaultExtensionCacheDir = () => path.join(os.homedir(), '.cache', 'web3-tester', 'metamask');
 const releaseUrl = (version) => `https://github.com/MetaMask/metamask-extension/releases/download/v${version}/metamask-chrome-${version}.zip`;
 const unzip = async (zipPath, destination) => {

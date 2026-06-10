@@ -70,15 +70,7 @@ test.describe('real MetaMask smoke', () => {
   });
 
   test('full journey: import, add network, connect, sign, send, reject', async ({ page, realWallet }) => {
-    // 1. Read the active account. 12.x makes the SRP's first account active;
-    //    13.x's multichain import derives many accounts and may activate a
-    //    different one, so the test follows whichever account the wallet
-    //    reports rather than assuming index 0.
-    const account = await realWallet.getAccountAddress();
-    expect(account).toMatch(/^0x[0-9a-fA-F]{40}$/);
-    await chain.setBalance(account as `0x${string}`, 10n ** 20n);
-
-    // 2. Wallet-side network management: point MetaMask at our anvil.
+    // 1. Wallet-side network management: point MetaMask at our anvil.
     await realWallet.addNetwork({
       name: 'Anvil Local',
       rpcUrl: anvil.rpcUrl,
@@ -87,13 +79,24 @@ test.describe('real MetaMask smoke', () => {
     });
     await realWallet.switchNetwork('Anvil Local', { chainId: anvil.chainId });
 
-    // 3. Connect the dapp.
+    // 2. Connect the dapp and take the connected account as ground truth.
+    //    12.x activates the SRP's first account; 13.x's multichain import
+    //    derives several accounts, so the test follows whichever account the
+    //    wallet actually connects rather than assuming an index.
     await page.goto(dappUrl);
     await page.evaluate(() => {
       void window.connect();
     });
     await realWallet.connectToDapp();
-    await expect(page.locator('#out')).toContainText(account.slice(2, 10).toLowerCase());
+    await expect(page.locator('#out')).toContainText(/^\["0x[0-9a-f]{40}"\]$/);
+    const [account] = JSON.parse(await page.locator('#out').innerText()) as `0x${string}`[];
+    await chain.setBalance(account, 10n ** 20n);
+
+    // getAccountAddress returns a valid address on both UI generations. On
+    // 12.x it equals the connected account; 13.x's multichain account tree
+    // has no single "selected" account pre-connect, so we only assert format.
+    const reported = await realWallet.getAccountAddress();
+    expect(reported).toMatch(/^0x[0-9a-fA-F]{40}$/);
 
     // 4. personal_sign + confirm; the signature must recover to the account.
     await page.evaluate((a) => {

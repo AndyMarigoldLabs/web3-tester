@@ -1041,11 +1041,18 @@ class MetaMaskRealWallet implements RealWalletController {
     );
     if (!pickerOpened) throw new Error('Unable to open the MetaMask network picker.');
 
+    // 13.x splits the picker into "Default"/popular and "Custom" tabs; the
+    // custom RPC form lives behind the Custom tab. (The bare "Add network"
+    // buttons on the default tab add preconfigured popular networks, not a
+    // custom RPC.) Selecting the tab is a no-op on 12.x.
+    await clickFirstVisible([page.getByRole('tab', { name: /^Custom$/i })], SHORT_TIMEOUT_MS);
+
     const addStarted = await clickFirstVisible(
       [
         page.locator(testId('network-list-menu-add-button')),
-        page.getByRole('button', { name: /Add a custom network|Add custom network|Add network/i }),
+        page.getByRole('button', { name: /Add a custom network|Add custom network/i }),
         page.getByText(/Add a custom network/i),
+        page.getByRole('button', { name: /^Add network$/i }),
       ],
       DEFAULT_TIMEOUT_MS,
     );
@@ -1140,7 +1147,7 @@ class MetaMaskRealWallet implements RealWalletController {
     );
     if (!pickerOpened) throw new Error('Unable to open the MetaMask network picker.');
 
-    const candidates = [
+    const candidates = () => [
       // 13.x multichain rows are keyed by CAIP-2 chain id.
       ...(options.chainId !== undefined
         ? [page.locator(testId(`network-list-item-eip155:${options.chainId}`))]
@@ -1153,7 +1160,14 @@ class MetaMaskRealWallet implements RealWalletController {
       page.getByText(name, { exact: true }),
     ];
 
-    const selected = await clickFirstVisible(candidates, DEFAULT_TIMEOUT_MS);
+    // Custom RPC networks live under the 13.x "Custom" tab; try the current
+    // (default) tab first, then the Custom tab. Selecting the tab is a no-op
+    // on 12.x.
+    let selected = await clickFirstVisible(candidates(), SHORT_TIMEOUT_MS);
+    if (!selected) {
+      await clickFirstVisible([page.getByRole('tab', { name: /^Custom$/i })], SHORT_TIMEOUT_MS);
+      selected = await clickFirstVisible(candidates(), DEFAULT_TIMEOUT_MS);
+    }
     if (!selected) {
       throw new Error(
         `Unable to select MetaMask network "${name}". Add it first with addNetwork(), and check "Show test networks" if it is a testnet.`,

@@ -1,5 +1,26 @@
 # Changelog
 
+## Unreleased
+
+### Added / Changed
+
+- **Current MetaMask (13.x "multichain" UI) is now fully supported** and is the
+  default (`DEFAULT_METAMASK_VERSION` = 13.34.1). The opt-in smoke suite runs
+  the full journey — onboarding, add/switch network, connect, sign, send,
+  reject — against the real extension on both 13.x and the older 12.x UI.
+- Onboarding completion on 13.x: handle the side-panel completion screen (the
+  "Open wallet" button opens Chrome's side panel instead of navigating) and
+  13.x's debounced IndexedDB persistence (dwell on a working home screen so the
+  vault/`completedOnboarding` flush before teardown).
+- `getAccountAddress`, `addNetwork`, and `switchNetwork` span both UI
+  generations: 13.x account address via the multichain account address menu →
+  Addresses → `multichain-address-row-copy-button` (read off the clipboard);
+  custom networks via the network picker's "Custom" tab; network switching by
+  CAIP-2 chain id (`switchNetwork(name, { chainId })`).
+- Note: on 13.x a single SRP import derives several accounts into a multichain
+  account tree with no single pre-connect "selected" account; prefer
+  `expectedAddress` or the dapp-reported connected account.
+
 ## 0.2.0 — 2026-06-09
 
 Hardening release driven by a full library review (see

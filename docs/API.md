@@ -120,8 +120,12 @@ const extensionPath = await prepareMetaMaskExtension({
 `cloneWalletProfile(cachedDir, targetDir)` (exported from the root entry)
 manage the onboarded-profile cache directly for custom setups.
 
-MetaMask 13.x cannot be used to build fresh profiles: its onboarding does not
-complete under automation. Preconfigured persistent profiles still work.
+Both current MetaMask 13.x ("multichain" UI) and the older 12.x UI are
+supported and validated by the smoke suite. `getAccountAddress()` without an
+`expectedAddress` returns a valid address on both, but 13.x's multichain
+account tree has no single "selected" account before a dapp connects, so on
+13.x prefer passing `expectedAddress` (verified against the wallet UI) or read
+the connected account from your dapp.
 
 ## Real Wallet (imperative)
 
