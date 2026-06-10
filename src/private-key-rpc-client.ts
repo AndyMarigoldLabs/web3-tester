@@ -1,7 +1,6 @@
 import {
   createPublicClient,
   createWalletClient,
-  hexToString,
   http,
   isAddress,
   type Account,
@@ -27,17 +26,12 @@ const normalizePrivateKey = (privateKey: string): Hex => {
 const asHex = (value: unknown): Hex | undefined =>
   typeof value === 'string' && value.startsWith('0x') ? (value as Hex) : undefined;
 
+// Hex payloads must be signed as raw bytes: decoding to UTF-8 first corrupts
+// binary messages (TextDecoder substitutes U+FFFD instead of throwing), and for
+// valid UTF-8 text the EIP-191 digest over the raw bytes is identical anyway.
 const normalizeMessage = (message: unknown): string | { raw: Hex } => {
   const hex = asHex(message);
-  if (!hex) {
-    return String(message ?? '');
-  }
-
-  try {
-    return hexToString(hex);
-  } catch {
-    return { raw: hex };
-  }
+  return hex ? { raw: hex } : String(message ?? '');
 };
 
 const parseParams = (request: JsonRpcRequest): unknown[] =>
@@ -78,11 +72,15 @@ export class PrivateKeyRpcClient implements RpcClient {
 
     switch (request.method) {
       case 'personal_sign': {
+        // Standard order is [message, address]; some legacy callers send
+        // [address, message]. When both params are addresses the request is
+        // ambiguous, so prefer the standard order and treat the first as the
+        // message.
         const [first, second] = params;
+        const firstIsAddress = typeof first === 'string' && isAddress(first);
+        const secondIsAddress = typeof second === 'string' && isAddress(second);
         const message =
-          typeof first === 'string' && isAddress(first) && second !== undefined
-            ? second
-            : first;
+          firstIsAddress && !secondIsAddress && second !== undefined ? second : first;
         return this.walletClient.signMessage({
           account: this.account,
           message: normalizeMessage(message),
@@ -97,6 +95,9 @@ export class PrivateKeyRpcClient implements RpcClient {
         });
       }
 
+      // v3 payloads (no arrays or recursive structs) hash identically under
+      // v4 rules, so both versions share the same signing path.
+      case 'eth_signTypedData_v3':
       case 'eth_signTypedData_v4': {
         const [, typedData] = params;
         const parsed =
@@ -112,6 +113,11 @@ export class PrivateKeyRpcClient implements RpcClient {
           types: parsed.types,
         });
       }
+
+      case 'eth_signTypedData':
+        throw new Error(
+          'eth_signTypedData (legacy v1) is not supported by PrivateKeyRpcClient. Use eth_signTypedData_v4.',
+        );
 
       case 'eth_sendTransaction': {
         const [transaction] = params as [Record<string, unknown> | undefined];

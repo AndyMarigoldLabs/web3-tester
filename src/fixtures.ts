@@ -21,8 +21,10 @@ export type MockWalletFixtureOptions = Omit<
   'accounts' | 'chainId'
 >;
 
+// Base defaults to 8645 rather than anvil's own 8545 so the fixture never
+// collides with a developer-run dev node on the conventional port.
 const workerPort = (workerIndex: number): number =>
-  Number(process.env.ANVIL_PORT ?? 8545) + workerIndex;
+  Number(process.env.ANVIL_PORT ?? 8645) + workerIndex;
 
 const resolveAnvilExecutable = (): string | undefined => {
   if (process.env.ANVIL_EXECUTABLE) {
