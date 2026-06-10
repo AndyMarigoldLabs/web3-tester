@@ -2,6 +2,24 @@
 
 ## Unreleased
 
+### Added — ERC-20 deal + deployment helpers (0.3.0)
+
+- `chain.dealErc20(token, account, amount, options?)` — forge-std `deal`
+  parity: balance-slot discovery via `eth_call` **state overrides** (nothing
+  is written during discovery), covering Solidity and Vyper layouts plus the
+  OZ-v5 ERC-7201 namespace root; a single verified final write; per-token
+  slot cache with verify-evict-rediscover on stale hits; optional
+  `adjustTotalSupply` (underflow rejects, like forge); clear `Erc20DealError`
+  for computed-balance tokens and non-anvil clients. Works on
+  `ANVIL_FORK_URL` forks.
+- `chain.deployContract({ abi, bytecode, args })` and `chain.deployErc20()`
+  (committed, reproducibly-built `TestERC20` artifact — `contracts/` +
+  `npm run build:contracts`, gated in CI like dist freshness).
+- `chain.getErc20Balance`, `chain.setStorageAt`/`setCode`/`setNonce`
+  passthroughs; new `@marigoldlabs/web3-tester/erc20` subpath with the
+  transport-agnostic core (`dealErc20`, `discoverErc20BalanceSlot`,
+  `getErc20Balance`, `TEST_ERC20_ABI`/`BYTECODE`).
+
 ### Added — multi-account & two-user fixtures (0.3.0)
 
 - `walletOptions.accounts` / `walletOptions.accountIndexes` start a test

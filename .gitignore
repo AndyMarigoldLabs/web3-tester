@@ -8,3 +8,7 @@ playwright-report/
 coverage/
 *.log
 .env
+
+# Forge build output (artifacts are generated into src/contracts via build:contracts)
+contracts/out/
+contracts/cache/

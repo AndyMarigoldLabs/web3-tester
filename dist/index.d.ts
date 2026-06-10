@@ -1,4 +1,6 @@
 export { AnvilInstance, ChainController } from './anvil.js';
+export { Erc20DealError, dealErc20, discoverErc20BalanceSlot, getErc20Balance, TEST_ERC20_ABI, TEST_ERC20_BYTECODE, } from './erc20.js';
+export type { DealErc20Options, Erc20SlotInfo, Erc20StorageLayout } from './erc20.js';
 export { test, expect } from './fixtures.js';
 export { MockWalletController, httpRpcClient } from './mock-wallet-controller.js';
 export { PrivateKeyRpcClient } from './private-key-rpc-client.js';
@@ -6,7 +8,7 @@ export { launchRealWallet, resolveRealWalletProfile } from './real-wallet.js';
 export { DEFAULT_METAMASK_VERSION, prepareMetaMaskExtension, extensionManifestVersion, } from './metamask-extension.js';
 export { buildWalletProfile, cloneWalletProfile } from './real-wallet-cache.js';
 export { DEFAULT_WALLET_PASSWORD } from './real-wallet-setup.js';
-export type { AnvilOptions, AnvilSnapshotId, AnvilViemClient, ChainControllerOptions, } from './anvil.js';
+export type { AnvilOptions, AnvilSnapshotId, AnvilViemClient, ChainControllerOptions, DeployContractOptions, DeployedContract, DeployedErc20, DeployErc20Options, } from './anvil.js';
 export type { ChainBackend, HeldRequest, HttpRpcClientOptions, MockWalletControllerOptions, RejectionRule, SentTransactionRecord, } from './mock-wallet-controller.js';
 export type { JsonRpcRequest, MockWalletConfig, RpcClient, WalletProviderInfo, } from './types.js';
 export type { PrivateKeyRpcClientOptions } from './private-key-rpc-client.js';

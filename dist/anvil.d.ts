@@ -1,5 +1,36 @@
-import { type Address, type Chain, type Hex, type PublicActions, type TestClient, type Transport, type WalletActions } from 'viem';
+import { type Abi, type Address, type Chain, type Hex, type PublicActions, type TestClient, type TransactionReceipt, type Transport, type WalletActions } from 'viem';
+import { TEST_ERC20_ABI } from './contracts/test-erc20.js';
+import { type DealErc20Options } from './erc20.js';
 import type { JsonRpcRequest, RpcClient } from './types.js';
+export type DeployContractOptions = {
+    abi: Abi;
+    bytecode: Hex;
+    args?: readonly unknown[];
+    /** Defaults to the first Anvil unlocked account. */
+    from?: Address;
+    value?: bigint;
+};
+export type DeployedContract = {
+    address: Address;
+    hash: Hex;
+    receipt: TransactionReceipt;
+};
+export type DeployErc20Options = {
+    name?: string;
+    symbol?: string;
+    decimals?: number;
+    /** Minted to mintTo in the constructor. Default 0n. */
+    initialSupply?: bigint;
+    /** Defaults to the deployer. */
+    mintTo?: Address;
+    from?: Address;
+};
+export type DeployedErc20 = DeployedContract & {
+    abi: typeof TEST_ERC20_ABI;
+    name: string;
+    symbol: string;
+    decimals: number;
+};
 export type AnvilOptions = {
     runtime?: 'binary' | 'docker';
     executable?: string;
@@ -52,5 +83,14 @@ export declare class ChainController implements RpcClient {
     setBalance(address: Address, value: bigint): Promise<void>;
     fastForward(seconds: number): Promise<void>;
     mine(blocks?: number): Promise<void>;
+    private readonly erc20SlotCache;
+    deployContract(options: DeployContractOptions): Promise<DeployedContract>;
+    deployErc20(options?: DeployErc20Options): Promise<DeployedErc20>;
+    /** forge-std deal parity: set any standard ERC-20 balance, fork included. */
+    dealErc20(token: Address, account: Address, amount: bigint, options?: DealErc20Options): Promise<void>;
+    getErc20Balance(token: Address, account: Address): Promise<bigint>;
+    setStorageAt(address: Address, slot: Hex | bigint | number, value: Hex | bigint): Promise<void>;
+    setCode(address: Address, bytecode: Hex): Promise<void>;
+    setNonce(address: Address, nonce: number): Promise<void>;
 }
 //# sourceMappingURL=anvil.d.ts.map

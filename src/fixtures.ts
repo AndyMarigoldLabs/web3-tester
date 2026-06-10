@@ -107,6 +107,7 @@ const resolveAccounts = async (
 //   tests/anvil.spec.ts                  19100 + w*20 + {0..3}
 //   tests/private-key-rpc-client.spec.ts 19510 + w*20 + {0..2}  (≡ 10..12)
 //   tests/mock-wallet-multichain.spec.ts 19700 + w*20 + {13..19}
+//   tests/erc20.spec.ts                  19900 + w*20 + {4..5}
 // The extras band assumes workerIndex < 1000.
 const workerPort = (workerIndex: number): number =>
   Number(process.env.ANVIL_PORT ?? 8645) + workerIndex;

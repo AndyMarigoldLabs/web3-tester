@@ -1,4 +1,5 @@
 export { AnvilInstance, ChainController } from './anvil.js';
+export { Erc20DealError, dealErc20, discoverErc20BalanceSlot, getErc20Balance, TEST_ERC20_ABI, TEST_ERC20_BYTECODE, } from './erc20.js';
 export { test, expect } from './fixtures.js';
 export { MockWalletController, httpRpcClient } from './mock-wallet-controller.js';
 export { PrivateKeyRpcClient } from './private-key-rpc-client.js';

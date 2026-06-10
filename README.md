@@ -226,6 +226,11 @@ await chain.impersonateAccount('0x0000000000000000000000000000000000000001');
 await chain.setBalance(wallet.primaryAccount, 10_000n * 10n ** 18n);
 await chain.fastForward(7 * 24 * 60 * 60);
 await chain.mine(3);
+
+// Token seeding and deployment (forge-style cheatcodes):
+const token = await chain.deployErc20({ symbol: 'USDX', decimals: 6 });
+await chain.dealErc20(token.address, wallet.primaryAccount, 5_000_000_000n);
+// dealErc20 also works on ANVIL_FORK_URL forks against real mainnet tokens.
 ```
 
 ## Wallet Control

@@ -5,17 +5,55 @@ import {
   createTestClient,
   http,
   publicActions,
+  toHex,
   walletActions,
+  type Abi,
   type Address,
   type Chain,
   type Hex,
   type PublicActions,
   type TestClient,
+  type TransactionReceipt,
   type Transport,
   type WalletActions,
 } from 'viem';
 import { foundry } from 'viem/chains';
+import { TEST_ERC20_ABI, TEST_ERC20_BYTECODE } from './contracts/test-erc20.js';
+import { dealErc20, getErc20Balance, type DealErc20Options, type Erc20SlotInfo } from './erc20.js';
 import type { JsonRpcRequest, RpcClient } from './types.js';
+
+export type DeployContractOptions = {
+  abi: Abi;
+  bytecode: Hex;
+  args?: readonly unknown[];
+  /** Defaults to the first Anvil unlocked account. */
+  from?: Address;
+  value?: bigint;
+};
+
+export type DeployedContract = {
+  address: Address;
+  hash: Hex;
+  receipt: TransactionReceipt;
+};
+
+export type DeployErc20Options = {
+  name?: string;
+  symbol?: string;
+  decimals?: number;
+  /** Minted to mintTo in the constructor. Default 0n. */
+  initialSupply?: bigint;
+  /** Defaults to the deployer. */
+  mintTo?: Address;
+  from?: Address;
+};
+
+export type DeployedErc20 = DeployedContract & {
+  abi: typeof TEST_ERC20_ABI;
+  name: string;
+  symbol: string;
+  decimals: number;
+};
 
 export type AnvilOptions = {
   runtime?: 'binary' | 'docker';
@@ -368,5 +406,87 @@ export class ChainController implements RpcClient {
 
   async mine(blocks = 1): Promise<void> {
     await this.client.mine({ blocks });
+  }
+
+  // ── Cheatcode-style helpers ─────────────────────────────────────────────
+  // These bypass the wallet entirely (like forge cheatcodes): no approval
+  // gating, no wallet.sentTransactions record.
+
+  // Worker-lifetime: slot positions are code-determined, and dealErc20
+  // verifies cache hits (with rediscovery) so address reuse after a
+  // snapshot revert cannot corrupt state.
+  private readonly erc20SlotCache = new Map<string, Erc20SlotInfo>();
+
+  async deployContract(options: DeployContractOptions): Promise<DeployedContract> {
+    const from = options.from ?? (await this.accounts())[0];
+    if (!from) {
+      throw new Error('Anvil did not expose any default accounts.');
+    }
+
+    const hash = await this.client.deployContract({
+      abi: options.abi,
+      bytecode: options.bytecode,
+      args: options.args,
+      account: from,
+      value: options.value,
+      chain: this.client.chain,
+    } as never);
+    const receipt = await this.client.waitForTransactionReceipt({ hash });
+    if (receipt.status !== 'success' || !receipt.contractAddress) {
+      throw new Error(`Contract deployment reverted (tx ${hash}).`);
+    }
+
+    return { address: receipt.contractAddress, hash, receipt };
+  }
+
+  async deployErc20(options: DeployErc20Options = {}): Promise<DeployedErc20> {
+    const from = options.from ?? (await this.accounts())[0];
+    if (!from) {
+      throw new Error('Anvil did not expose any default accounts.');
+    }
+
+    const name = options.name ?? 'Test Token';
+    const symbol = options.symbol ?? 'TEST';
+    const decimals = options.decimals ?? 18;
+    const initialSupply = options.initialSupply ?? 0n;
+
+    const deployed = await this.deployContract({
+      abi: TEST_ERC20_ABI as unknown as Abi,
+      bytecode: TEST_ERC20_BYTECODE,
+      args: [name, symbol, decimals, initialSupply, options.mintTo ?? from],
+      from,
+    });
+
+    return { ...deployed, abi: TEST_ERC20_ABI, name, symbol, decimals };
+  }
+
+  /** forge-std deal parity: set any standard ERC-20 balance, fork included. */
+  async dealErc20(
+    token: Address,
+    account: Address,
+    amount: bigint,
+    options?: DealErc20Options,
+  ): Promise<void> {
+    return dealErc20(this, token, account, amount, options, this.erc20SlotCache);
+  }
+
+  async getErc20Balance(token: Address, account: Address): Promise<bigint> {
+    return getErc20Balance(this, token, account);
+  }
+
+  async setStorageAt(address: Address, slot: Hex | bigint | number, value: Hex | bigint): Promise<void> {
+    await this.client.setStorageAt({
+      address,
+      index: toHex(BigInt(slot), { size: 32 }) as Hex & { length: 66 },
+      value: toHex(BigInt(value), { size: 32 }),
+    });
+  }
+
+  async setCode(address: Address, bytecode: Hex): Promise<void> {
+    await this.client.setCode({ address, bytecode });
+  }
+
+  async setNonce(address: Address, nonce: number): Promise<void> {
+    await this.client.setNonce({ address, nonce });
   }
 }

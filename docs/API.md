@@ -385,6 +385,36 @@ Supported wallet methods include:
 
 The underlying Viem test client is available as `chain.client` for advanced calls.
 
+### Seeding tokens and deploying contracts
+
+`chain.*` helpers are cheatcodes (forge-style): they bypass the wallet
+entirely — no approval gating, no `wallet.sentTransactions` record.
+
+| Method | Description |
+| --- | --- |
+| `deployContract({ abi, bytecode, args?, from?, value? })` | Deploys through an Anvil unlocked account; resolves `{ address, hash, receipt }`, throwing on a reverted constructor. |
+| `deployErc20(options?)` | Deploys the committed `TestERC20` artifact (classic layout, open mint/burn — never deploy where value lives). Options: `name`, `symbol`, `decimals`, `initialSupply`, `mintTo`, `from`. |
+| `dealErc20(token, account, amount, options?)` | forge-std `deal` parity: sets any standard ERC-20 balance via slot discovery (Solidity + Vyper layouts, OZ-v5 ERC-7201 roots), with a per-token slot cache. Options: `adjustTotalSupply`, `slot`/`layout`, `storageAddress`, `maxSlot`. |
+| `getErc20Balance(token, account)` | `balanceOf` without importing an ABI. |
+| `setStorageAt(address, slot, value)` / `setCode(address, bytecode)` / `setNonce(address, nonce)` | Thin anvil cheat passthroughs. |
+
+Discovery never writes: candidates are probed with `eth_call` state
+overrides, so a crash mid-discovery cannot dirty the chain; the single final
+write is verified against `balanceOf` (including cache hits — a stale cache
+entry from address reuse after a snapshot revert is evicted and rediscovered
+once). Not dealable by probing: rebasing/shares tokens (stETH, aTokens)
+whose `balanceOf` is computed, and solady-style seeded layouts (use
+`chain.setStorageAt` with a hand-computed slot). External-storage proxies
+need `{ storageAddress }`. Failures throw `Erc20DealError` naming the
+remediation; pointing `dealErc20` at a non-anvil client (live chains) fails
+with a clear error.
+
+Fork recipe: with `ANVIL_FORK_URL` (and ideally `ANVIL_FORK_BLOCK_NUMBER`
+via `anvilOptions.forkBlockNumber` for determinism), `dealErc20` works on
+real mainnet tokens — reads fall through to the upstream RPC, the write
+overlays locally, and the slot cache makes repeat deals cheap. Combine with
+`chain.impersonateAccount(whale)` for send-only whale flows.
+
 ## AnvilInstance
 
 ```ts

@@ -1,7 +1,9 @@
 import { spawn } from 'node:child_process';
 import { once } from 'node:events';
-import { createTestClient, http, publicActions, walletActions, } from 'viem';
+import { createTestClient, http, publicActions, toHex, walletActions, } from 'viem';
 import { foundry } from 'viem/chains';
+import { TEST_ERC20_ABI, TEST_ERC20_BYTECODE } from './contracts/test-erc20.js';
+import { dealErc20, getErc20Balance } from './erc20.js';
 const DEFAULT_MNEMONIC = 'test test test test test test test test test test test junk';
 const LOOPBACK_HOST_PATTERN = /^(127(\.\d{1,3}){3}|localhost|::1|\[::1\])$/i;
 const DEFAULT_FOUNDRY_DOCKER_IMAGE = 'ghcr.io/foundry-rs/foundry:latest';
@@ -257,6 +259,69 @@ export class ChainController {
     }
     async mine(blocks = 1) {
         await this.client.mine({ blocks });
+    }
+    // ── Cheatcode-style helpers ─────────────────────────────────────────────
+    // These bypass the wallet entirely (like forge cheatcodes): no approval
+    // gating, no wallet.sentTransactions record.
+    // Worker-lifetime: slot positions are code-determined, and dealErc20
+    // verifies cache hits (with rediscovery) so address reuse after a
+    // snapshot revert cannot corrupt state.
+    erc20SlotCache = new Map();
+    async deployContract(options) {
+        const from = options.from ?? (await this.accounts())[0];
+        if (!from) {
+            throw new Error('Anvil did not expose any default accounts.');
+        }
+        const hash = await this.client.deployContract({
+            abi: options.abi,
+            bytecode: options.bytecode,
+            args: options.args,
+            account: from,
+            value: options.value,
+            chain: this.client.chain,
+        });
+        const receipt = await this.client.waitForTransactionReceipt({ hash });
+        if (receipt.status !== 'success' || !receipt.contractAddress) {
+            throw new Error(`Contract deployment reverted (tx ${hash}).`);
+        }
+        return { address: receipt.contractAddress, hash, receipt };
+    }
+    async deployErc20(options = {}) {
+        const from = options.from ?? (await this.accounts())[0];
+        if (!from) {
+            throw new Error('Anvil did not expose any default accounts.');
+        }
+        const name = options.name ?? 'Test Token';
+        const symbol = options.symbol ?? 'TEST';
+        const decimals = options.decimals ?? 18;
+        const initialSupply = options.initialSupply ?? 0n;
+        const deployed = await this.deployContract({
+            abi: TEST_ERC20_ABI,
+            bytecode: TEST_ERC20_BYTECODE,
+            args: [name, symbol, decimals, initialSupply, options.mintTo ?? from],
+            from,
+        });
+        return { ...deployed, abi: TEST_ERC20_ABI, name, symbol, decimals };
+    }
+    /** forge-std deal parity: set any standard ERC-20 balance, fork included. */
+    async dealErc20(token, account, amount, options) {
+        return dealErc20(this, token, account, amount, options, this.erc20SlotCache);
+    }
+    async getErc20Balance(token, account) {
+        return getErc20Balance(this, token, account);
+    }
+    async setStorageAt(address, slot, value) {
+        await this.client.setStorageAt({
+            address,
+            index: toHex(BigInt(slot), { size: 32 }),
+            value: toHex(BigInt(value), { size: 32 }),
+        });
+    }
+    async setCode(address, bytecode) {
+        await this.client.setCode({ address, bytecode });
+    }
+    async setNonce(address, nonce) {
+        await this.client.setNonce({ address, nonce });
     }
 }
 //# sourceMappingURL=anvil.js.map

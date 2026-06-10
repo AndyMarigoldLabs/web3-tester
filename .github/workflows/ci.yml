@@ -40,6 +40,14 @@ jobs:
             exit 1
           fi
 
+      - name: Committed contract artifacts must match a fresh forge build
+        run: |
+          npm run build:contracts
+          if ! git diff --exit-code --stat src/contracts tests/contracts; then
+            echo "::error::contract artifacts are stale — run 'npm run build:contracts' and commit the result."
+            exit 1
+          fi
+
       - name: Library tests
         run: npm test
 

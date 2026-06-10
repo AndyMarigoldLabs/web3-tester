@@ -24,6 +24,10 @@
       "types": "./dist/anvil.d.ts",
       "import": "./dist/anvil.js"
     },
+    "./erc20": {
+      "types": "./dist/erc20.d.ts",
+      "import": "./dist/erc20.js"
+    },
     "./fixtures": {
       "types": "./dist/fixtures.d.ts",
       "import": "./dist/fixtures.js"
@@ -66,6 +70,7 @@
   ],
   "scripts": {
     "build": "tsc -p tsconfig.build.json",
+    "build:contracts": "node scripts/build-contracts.mjs",
     "clean": "node -e \"require('node:fs').rmSync('dist', { recursive: true, force: true })\"",
     "prepare": "npm run build",
     "test": "playwright test --project=library",

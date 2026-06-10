@@ -12,6 +12,7 @@ export default defineConfig({
       name: 'library',
       testMatch: [
         '**/anvil.spec.ts',
+        '**/erc20.spec.ts',
         '**/fixtures-multichain.spec.ts',
         '**/live-fixtures.spec.ts',
         '**/mock-wallet.spec.ts',
