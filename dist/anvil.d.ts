@@ -17,6 +17,8 @@ export type AnvilOptions = {
     extraArgs?: readonly string[];
     timeoutMs?: number;
     silent?: boolean;
+    /** Opt in to binding Anvil to a non-loopback interface. */
+    allowNonLoopbackHost?: boolean;
 };
 export type AnvilSnapshotId = Hex;
 export type AnvilViemClient = TestClient<'anvil', Transport, Chain> & PublicActions<Transport, Chain> & WalletActions<Chain>;

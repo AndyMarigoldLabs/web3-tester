@@ -38,15 +38,19 @@ The injected script is installed with `page.addInitScript`, so it exists before 
 
 ## RPC Boundary
 
-Browser code cannot access Node objects directly. The harness uses:
+Browser code cannot access Node objects directly. The harness uses a
+context-level binding (so pages the dapp opens itself are covered) that
+receives the calling frame, letting the controller enforce `allowedOrigins`
+before any request is handled:
 
 ```ts
-page.exposeFunction('__invisibleWalletRpcBridge', async (request) => {
-  return controller.handleRpcRequest(request);
+context.exposeBinding('__invisibleWalletRpcBridge', async ({ frame }, request) => {
+  assertOriginAllowed(frame); // 4100 unless the frame's effective origin is allowed
+  return handleRpcRequest(request); // serialized success/error envelope
 });
 ```
 
-The browser receives only a serialized success or error envelope. Provider-shaped errors are rehydrated in the browser with their original `code`, `message`, and optional `data`.
+The browser receives only a serialized success or error envelope. Provider-shaped errors are rehydrated in the browser with their original `code`, `message`, and optional `data`. When `allowedOrigins` is set, the injected provider also declines to install in out-of-scope frames, so blocked pages never even see `window.ethereum`; live fixtures default the allowlist to Playwright's `baseURL`.
 
 ## Chain Isolation
 

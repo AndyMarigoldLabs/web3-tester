@@ -41,6 +41,37 @@ Fixtures:
 | `wallet` | test | `MockWalletController` backed by a real Sepolia private-key signer. |
 | `liveClient` | test | `PrivateKeyRpcClient` for Sepolia RPC and transaction submission. |
 
+Because a real key sits behind the provider, live wallets are deny-by-default:
+
+- `autoApprove` is `false` — signing, sending (`eth_sendRawTransaction`
+  included), and wallet prompts throw `4001` until the test arms them with
+  `wallet.approveNext(methods?, match?)` (single request) or
+  `wallet.autoApprove(true)` /
+  `test.use({ liveOptions: { walletOptions: { autoApprove: true } } })`
+  (whole test, deliberate opt-in). The wallet starts pre-connected
+  (`eth_accounts` answers silently), but `eth_requestAccounts` still
+  requires arming — unlike real MetaMask for an already-permitted origin.
+- When Playwright's `baseURL` is configured, the provider is origin-scoped to
+  it: frames on any other origin (ads, embedded iframes) get no
+  `window.ethereum` at all, and the RPC bridge refuses them with `4100`.
+  Override with `liveOptions: { walletOptions: { allowedOrigins: [...] } }`,
+  or pass `allowedOrigins: undefined` to serve every frame. Without a
+  `baseURL`, every frame is served.
+
+```ts
+wallet.approveNext('personal_sign'); // arm the SIWE signature…
+await page.getByRole('button', { name: 'Sign in' }).click(); // …then trigger it
+```
+
+An unbound grant approves whatever matching request arrives first; pass the
+`match` predicate to pin it to the expected payload:
+
+```ts
+wallet.approveNext('personal_sign', (_method, params) =>
+  String(params[0]).includes(expectedHexMessage),
+);
+```
+
 Fixtures:
 
 | Fixture | Scope | Description |
@@ -190,6 +221,12 @@ const wallet = new MockWalletController(page, rpcClient, {
   chainId: 31337,
   autoApprove: true,
   connected: true,
+  // Optional, http(s) origins only: the provider installs (and the bridge
+  // answers) only in frames on these origins; everything else sees no
+  // window.ethereum and gets 4100 from the bridge. Same-origin about:blank
+  // and srcdoc children inherit their parent's origin. Unset serves every
+  // frame, like a real extension.
+  allowedOrigins: ['https://app.example.com'],
 });
 await wallet.injectMockProvider();
 ```
@@ -209,6 +246,7 @@ Methods:
 | --- | --- |
 | `injectMockProvider()` | Adds the RPC bridge and injects `window.ethereum` context-wide (popups and dapp-opened tabs included). One controller per browser context. |
 | `autoApprove(enabled)` | Toggles automatic approval for signing methods, `eth_requestAccounts`, and `wallet_*` prompt methods. |
+| `approveNext(methods?, match?)` | Arms approval for the next matching request while autoApprove is off — the explicit per-call grant for real-key wallets. `match(method, params)` binds the grant to an expected payload. Queued rejections and holds take precedence; grants do not expire until consumed. |
 | `simulateRejection(methods?, message?)` | Rejects the next matching request with code `4001`. The default method set covers all approval-gated methods. |
 | `holdNextRequest(methods?)` | Keeps the next matching request pending until the returned `HeldRequest` is approved or rejected — for "confirm in your wallet" UI states. |
 | `waitForNextTransaction(options?)` | Resolves with the hash of the next transaction the page submits. |
@@ -239,6 +277,7 @@ Supported wallet methods include:
 - `wallet_watchAsset`
 - `metamask_getProviderState`
 - `eth_sendTransaction`
+- `eth_sendRawTransaction` (approval-gated like a spend; recorded in `sentTransactions`)
 - `personal_sign`
 - `eth_sign`
 - `eth_signTypedData_v3` (signed via the backend's v4 path)
@@ -293,9 +332,10 @@ Options:
 | `blockTime` | Optional automatic mining interval. |
 | `forkUrl` | Optional fork RPC URL. |
 | `forkBlockNumber` | Optional pinned fork block (deterministic fork tests). |
-| `extraArgs` | Additional raw anvil CLI arguments. |
+| `extraArgs` | Additional raw anvil CLI arguments. A `--host` here is refused unless `allowNonLoopbackHost` is set — pass the bind address via `host`. |
 | `timeoutMs` | Startup timeout. |
 | `silent` | Suppress or stream Anvil logs. |
+| `allowNonLoopbackHost` | Explicit opt-in for a non-loopback `host`. Without it, `start()` refuses to bind beyond loopback — Anvil's admin RPC is unauthenticated. |
 
 `start()` only reports ready once the spawned process itself is listening and
 reports the requested chain id — a pre-existing node on the same port fails
@@ -312,12 +352,24 @@ const client = new PrivateKeyRpcClient({
 });
 ```
 
+Two guards keep a misconfigured client from signing where it should not:
+
+- Construction throws for chains that are neither marked `testnet: true` nor
+  local dev chains (31337/1337), unless `allowMainnet: true` is passed — the
+  testnet guarantee is a property of the client, not of any fixture wiring.
+  (`createLiveFixtures({ allowMainnet })` passes the flag through.)
+- Before the first broadcast (`eth_sendTransaction` or
+  `eth_sendRawTransaction`), the client verifies the RPC endpoint's
+  `eth_chainId` matches the configured chain and fails loudly on mismatch.
+  Verification is cached after the first success.
+
 It supports:
 
 - `personal_sign` (hex payloads are signed as raw bytes; both `[message, address]` and legacy `[address, message]` param orders)
 - `eth_sign`
 - `eth_signTypedData_v3` / `eth_signTypedData_v4`
 - `eth_sendTransaction`
+- `eth_sendRawTransaction` (chain-verified like `eth_sendTransaction`)
 - read-only RPC forwarding through Viem public client
 
 It records sent transaction hashes in:

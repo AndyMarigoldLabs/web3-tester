@@ -4,11 +4,22 @@ import { PrivateKeyRpcClient } from './private-key-rpc-client.js';
 export type LiveFixtureOptions = {
     /** Target chain. Defaults to Sepolia. */
     chain?: Chain;
+    /**
+     * Passed through to PrivateKeyRpcClient for chains that are neither
+     * `testnet: true` nor local dev chains. Without it such chains throw at
+     * fixture setup.
+     */
+    allowMainnet?: boolean;
     /** Env var holding the signing key. Defaults to WEB3_TESTER_PRIVATE_KEY. */
     privateKeyEnv?: string;
     /** Env var holding the RPC URL. Defaults to WEB3_TESTER_RPC_URL. */
     rpcUrlEnv?: string;
-    /** Per-test overrides for the injected wallet (provider identity, autoApprove, …). */
+    /**
+     * Per-test overrides for the injected wallet (provider identity,
+     * autoApprove, allowedOrigins, …). Live wallets default to
+     * autoApprove: false and origin-scope the provider to baseURL; override
+     * here only for keys you are comfortable auto-signing with.
+     */
     walletOptions?: Omit<Partial<MockWalletControllerOptions>, 'accounts' | 'chainId'>;
 };
 export type LiveWeb3Fixtures = {

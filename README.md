@@ -66,10 +66,20 @@ import { expect, test } from '@marigoldlabs/web3-tester/live-fixtures';
 
 test('signs in through SIWE on Sepolia', async ({ page, wallet }) => {
   await page.goto('/');
+
+  // Live wallets are deny-by-default: arm each prompt before triggering it.
+  wallet.approveNext('eth_requestAccounts');
   await page.getByRole('button', { name: /connect/i }).click();
+
+  wallet.approveNext('personal_sign');
+  await page.getByRole('button', { name: /sign in/i }).click();
+
   await expect(page.getByText(wallet.primaryAccount.slice(0, 6))).toBeVisible();
 });
 ```
+
+To deliberately auto-approve a whole test instead, use
+`test.use({ liveOptions: { walletOptions: { autoApprove: true } } })`.
 
 For fully in-UI real wallet tests, use the real-wallet fixtures. The pinned
 MetaMask build is downloaded automatically, onboarding runs once into a
@@ -176,7 +186,8 @@ Copy `.env.example` for local reference. Do not commit real private keys.
 | `ANVIL_EXECUTABLE` | `anvil` | Path to the Anvil binary. |
 | `ANVIL_RUNTIME` | `binary` | Set to `docker` to run Anvil through Docker Desktop. |
 | `ANVIL_DOCKER_IMAGE` | `ghcr.io/foundry-rs/foundry:latest` | Docker image used when `ANVIL_RUNTIME=docker`. |
-| `ANVIL_HOST` | `127.0.0.1` | Host for worker Anvil RPC endpoints. |
+| `ANVIL_HOST` | `127.0.0.1` | Host for worker Anvil RPC endpoints. Non-loopback hosts are refused unless `ANVIL_ALLOW_NON_LOOPBACK=true`. |
+| `ANVIL_ALLOW_NON_LOOPBACK` | `false` | Explicit opt-in to bind Anvil beyond loopback (exposes its unauthenticated admin RPC to the network). |
 | `ANVIL_PORT` | `8645` | Base port (worker index is added for isolation). Defaults off 8545 so a developer-run dev node never collides. |
 | `ANVIL_CHAIN_ID` | `31337` | Chain ID exposed by local Anvil and the injected provider. |
 | `ANVIL_FORK_URL` | unset | Optional fork RPC URL. |
@@ -259,7 +270,7 @@ test.use({
 | Path | Purpose |
 | --- | --- |
 | `src/` | Reusable package source. |
-| `tests/` (library project) | Hermetic harness self-tests: `anvil`, `mock-wallet`, `private-key-rpc-client`, `provider-injection`, `real-wallet`, `real-wallet-smoke` (opt-in). |
+| `tests/` (library project) | Hermetic harness self-tests: `anvil`, `live-fixtures`, `mock-wallet`, `private-key-rpc-client`, `provider-injection`, `real-wallet`, `real-wallet-smoke` (opt-in). |
 | `tests/fjord*.spec.ts` (fjord project) | Fjord v4 public, live, and mutation QA specs (`npm run test:fjord`). |
 | `docs/` | Dependency, API, architecture, and Fjord QA documentation. |
 | `examples/` | Copyable consumer-app snippets. |
@@ -267,8 +278,26 @@ test.use({
 
 ## Safety Model
 
-- Local tests use deterministic Anvil accounts only.
+- Local tests use deterministic Anvil accounts only, and Anvil refuses to
+  bind beyond loopback unless `ANVIL_ALLOW_NON_LOOPBACK=true` is set — its
+  admin RPC (impersonation, `setBalance`, the fork URL) is unauthenticated.
 - Live tests require explicit environment variables and never store private keys in source.
+- Live wallets are deny-by-default: signing, sending (including
+  `eth_sendRawTransaction`), and wallet prompts (`eth_requestAccounts`
+  included, even though the wallet starts pre-connected) throw `4001` until
+  the test arms them — `wallet.approveNext(methods?, match?)` per request, or
+  `wallet.autoApprove(true)` /
+  `test.use({ liveOptions: { walletOptions: { autoApprove: true } } })` as a
+  deliberate whole-test opt-in. So page scripts — including third-party
+  includes on the dapp under test — cannot spend or sign unprompted.
+- When Playwright's `baseURL` is configured, the live provider is
+  origin-scoped to it: out-of-scope frames get no `window.ethereum` at all
+  and the RPC bridge refuses them with `4100`. Override with
+  `allowedOrigins`; without a `baseURL`, every frame is served.
+- `PrivateKeyRpcClient` refuses chains that are not testnets or local dev
+  chains unless constructed with `allowMainnet: true`, and verifies the RPC
+  endpoint's `eth_chainId` matches the configured chain before the first
+  broadcast (`eth_sendTransaction` / `eth_sendRawTransaction`).
 - Real-wallet tests use a persistent browser profile and keep extension-side automation inside this package.
 - Mutation tests are skipped unless their opt-in flag is set.
 - Published reports redact secrets and record transaction hashes only when useful for auditability.

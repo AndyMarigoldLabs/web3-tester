@@ -21,7 +21,8 @@ Any legacy "mainnet" wording in the manual QA doc is treated as Sepolia for this
 | Category | Specs | Default behavior |
 | --- | --- | --- |
 | Public read-only | `fjord-public`, `fjord`, public parts of other specs | Runs without private key where possible. |
-| Live wallet read-only | `fjord-live-sepolia`, `fjord-auth-edge`, `fjord-partials-live` | Requires `FJORD_PRIVATE_KEY`. |
+| Live wallet read-only | `fjord-live-sepolia`, `fjord-auth-edge`, `fjord-partials-live` | Requires `FJORD_PRIVATE_KEY`. Opt into `autoApprove: true`; read-only by exercised flow, not wallet-enforced. |
+| Live wallet read-only (wallet-enforced) | `fjord-token-deployment-readonly` | Requires `FJORD_PRIVATE_KEY`. Default-deny wallet armed only for the SIWE `personal_sign`, so any transaction attempt is rejected with `4001`. |
 | Live transaction | `fjord-live-transaction` | Requires `FJORD_RUN_TRANSACTIONS=true`. |
 | Live mutations | `fjord-live-mutations` | Requires `FJORD_MUTATE_STATE=true`. |
 | Sale publishing | `fjord-live-mutations` publish branch | Requires `FJORD_PUBLISH_SALES=true`. |

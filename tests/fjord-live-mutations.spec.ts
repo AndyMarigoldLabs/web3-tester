@@ -13,6 +13,9 @@ test.skip(
   process.env.FJORD_MUTATE_STATE !== 'true',
   'Set FJORD_MUTATE_STATE=true to run live Sepolia mutation QA.',
 );
+// Deliberate opt-in: this QA suite auto-signs with the dedicated Sepolia QA
+// key. Live wallets otherwise refuse approval-gated requests until armed.
+test.use({ liveOptions: { walletOptions: { autoApprove: true } } });
 test.describe.configure({ mode: 'serial' });
 test.setTimeout(300_000);
 

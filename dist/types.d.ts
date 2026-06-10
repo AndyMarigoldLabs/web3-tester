@@ -33,6 +33,7 @@ export type MockWalletConfig = {
     connected: boolean;
     autoApprove: boolean;
     providers: readonly WalletProviderInfo[];
+    allowedOrigins?: readonly string[];
 };
 export type ProviderRpcErrorLike = Error & {
     code: number;

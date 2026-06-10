@@ -1,7 +1,8 @@
 import { expect, test } from '@playwright/test';
 import { recoverMessageAddress, stringToHex, verifyTypedData } from 'viem';
 import { privateKeyToAccount } from 'viem/accounts';
-import { sepolia } from 'viem/chains';
+import { foundry, mainnet, sepolia } from 'viem/chains';
+import { AnvilInstance } from '../src/anvil.js';
 import { PrivateKeyRpcClient } from '../src/private-key-rpc-client.js';
 
 // Well-known anvil dev key #0 — never holds real funds.
@@ -144,4 +145,106 @@ test('eth_sendTransaction without a transaction object throws', async () => {
   await expect(
     client().request({ method: 'eth_sendTransaction', params: [] }),
   ).rejects.toThrow(/requires a transaction object/);
+});
+
+test.describe('chain guard', () => {
+  // anvil.spec.ts uses 19100 + 20w + {0..3}; this band sits at offset 10-12
+  // mod 20 from the same stride, so the two can never collide at any pair of
+  // worker indices.
+  const basePort = (workerIndex: number) => 19510 + workerIndex * 20;
+
+  test('refuses production chains without allowMainnet', () => {
+    expect(
+      () => new PrivateKeyRpcClient({ privateKey: PRIVATE_KEY, chain: mainnet }),
+    ).toThrow(/allowMainnet/);
+  });
+
+  test('allows production chains with allowMainnet: true', () => {
+    expect(
+      () =>
+        new PrivateKeyRpcClient({ privateKey: PRIVATE_KEY, chain: mainnet, allowMainnet: true }),
+    ).not.toThrow();
+  });
+
+  test('allows local dev chains that viem does not flag as testnets', () => {
+    expect(() => new PrivateKeyRpcClient({ privateKey: PRIVATE_KEY, chain: foundry })).not.toThrow();
+  });
+
+  test('refuses to broadcast when the RPC endpoint reports a different chain', async ({}, testInfo) => {
+    const anvil = await AnvilInstance.start({
+      port: basePort(testInfo.workerIndex),
+      chainId: 31337,
+      silent: true,
+    });
+
+    try {
+      const mismatched = new PrivateKeyRpcClient({
+        privateKey: PRIVATE_KEY,
+        chain: sepolia,
+        rpcUrl: anvil.rpcUrl,
+      });
+
+      await expect(
+        mismatched.request({
+          method: 'eth_sendTransaction',
+          params: [{ to: account.address, value: '0x1' }],
+        }),
+      ).rejects.toThrow(/reports chain id 31337/);
+      expect(mismatched.sentTransactions).toHaveLength(0);
+
+      // eth_sendRawTransaction is also a broadcast and must hit the same wall.
+      await expect(
+        mismatched.request({ method: 'eth_sendRawTransaction', params: ['0x02deadbeef'] }),
+      ).rejects.toThrow(/reports chain id 31337/);
+
+      // allowMainnet skips the construction guard, never the RPC verification.
+      const mainnetAllowed = new PrivateKeyRpcClient({
+        privateKey: PRIVATE_KEY,
+        chain: mainnet,
+        allowMainnet: true,
+        rpcUrl: anvil.rpcUrl,
+      });
+      await expect(
+        mainnetAllowed.request({
+          method: 'eth_sendTransaction',
+          params: [{ to: account.address, value: '0x1' }],
+        }),
+      ).rejects.toThrow(/reports chain id 31337/);
+
+      // The node itself confirms nothing was broadcast.
+      const nonce = (await mismatched.request({
+        method: 'eth_getTransactionCount',
+        params: [account.address, 'pending'],
+      })) as string;
+      expect(Number(BigInt(nonce))).toBe(0);
+    } finally {
+      await anvil.stop();
+    }
+  });
+
+  test('broadcasts once the RPC chain id verifies', async ({}, testInfo) => {
+    const anvil = await AnvilInstance.start({
+      port: basePort(testInfo.workerIndex) + 1,
+      chainId: 31337,
+      silent: true,
+    });
+
+    try {
+      const matched = new PrivateKeyRpcClient({
+        privateKey: PRIVATE_KEY,
+        chain: foundry,
+        rpcUrl: anvil.rpcUrl,
+      });
+
+      const hash = (await matched.request({
+        method: 'eth_sendTransaction',
+        params: [{ to: account.address, value: '0x1' }],
+      })) as `0x${string}`;
+
+      expect(hash).toMatch(/^0x[0-9a-f]{64}$/);
+      expect(matched.sentTransactions).toEqual([hash]);
+    } finally {
+      await anvil.stop();
+    }
+  });
 });

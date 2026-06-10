@@ -3,11 +3,21 @@ import { expect, test } from '../src/live-fixtures.js';
 test.skip(!process.env.FJORD_PRIVATE_KEY, 'FJORD_PRIVATE_KEY is required for live Sepolia tests.');
 test.setTimeout(90_000);
 
+// No autoApprove opt-in here on purpose: the wallet stays default-deny, so
+// only the single armed SIWE signature can happen — any transaction attempt
+// is rejected with 4001, making this spec read-only by construction.
+
 const shortAddress = (address: string) => `${address.slice(0, 4)}...${address.slice(-4)}`;
 
 const signIn = async (
   page: import('@playwright/test').Page,
-  wallet: { primaryAccount: string },
+  wallet: {
+    primaryAccount: string;
+    approveNext: (
+      methods?: string | readonly string[],
+      match?: (method: string, params: readonly unknown[]) => boolean,
+    ) => void;
+  },
 ) => {
   await page.goto('/');
   await page
@@ -19,6 +29,14 @@ const signIn = async (
   const walletDialog = page.getByRole('dialog', { name: 'Wallet' });
   const siweButton = walletDialog.locator('button').filter({ hasText: /^person_search$/ }).first();
   await expect(siweButton).toBeAttached();
+  // The grant is bound to the SIWE login message (its first line carries the
+  // dapp domain), so no other page script can race it for a signature over
+  // different data.
+  wallet.approveNext('personal_sign', (_method, params) => {
+    const hex = String(params[0] ?? '').replace(/^0x/, '');
+    const text = Buffer.from(hex, 'hex').toString('utf8');
+    return /fjordfoundry\.com/i.test(text);
+  });
   await siweButton.evaluate((button) => (button as HTMLButtonElement).click());
   await expect(walletDialog.getByRole('button', { name: /Log out/i })).toBeVisible({
     timeout: 20_000,
@@ -63,6 +81,9 @@ test('Fjord exposes the Sepolia ERC-20 deployment modal before transaction submi
     timeout: 15_000,
   });
   await page.getByRole('button', { name: 'Deploy' }).click();
+  // Let any async submission path play out before asserting absence; the
+  // default-deny wallet would reject it with 4001 anyway.
+  await page.waitForTimeout(1_500);
   expect(liveClient.sentTransactions).toHaveLength(0);
 
   const symbolInput = page.locator('[name="symbol"]');

@@ -16,7 +16,16 @@ export type PrivateKeyRpcClientOptions = {
   privateKey: Hex;
   chain?: Chain;
   rpcUrl?: string;
+  /** Opt in to signing on production (non-testnet) chains. */
+  allowMainnet?: boolean;
 };
+
+// Anvil/Hardhat chains are safe targets but viem does not mark them
+// `testnet: true`, so they need their own allowlist entry.
+const LOCAL_DEV_CHAIN_IDS = new Set([1337, 31337]);
+
+const isTestChain = (chain: Chain): boolean =>
+  chain.testnet === true || LOCAL_DEV_CHAIN_IDS.has(chain.id);
 
 const normalizePrivateKey = (privateKey: string): Hex => {
   const trimmed = privateKey.trim();
@@ -50,9 +59,17 @@ export class PrivateKeyRpcClient implements RpcClient {
 
   private readonly publicClient;
   private readonly walletClient: WalletClient;
+  private rpcChainVerified = false;
 
   constructor(options: PrivateKeyRpcClientOptions) {
     this.chain = options.chain ?? sepolia;
+    if (!options.allowMainnet && !isTestChain(this.chain)) {
+      throw new Error(
+        `PrivateKeyRpcClient refuses chain "${this.chain.name}" (id ${this.chain.id}) because it is not marked as a testnet. ` +
+          'This client signs and broadcasts without confirmation prompts. Pass allowMainnet: true to target a production chain, ' +
+          'or use a chain definition with testnet: true.',
+      );
+    }
     this.account = privateKeyToAccount(normalizePrivateKey(options.privateKey));
 
     const transport = http(options.rpcUrl);
@@ -119,11 +136,23 @@ export class PrivateKeyRpcClient implements RpcClient {
           'eth_signTypedData (legacy v1) is not supported by PrivateKeyRpcClient. Use eth_signTypedData_v4.',
         );
 
+      // Also a broadcast — it must not slip past the chain check through the
+      // default passthrough.
+      case 'eth_sendRawTransaction': {
+        await this.assertRpcChainMatches();
+        const hash = (await this.publicClient.request(request as never)) as Hex;
+        this.sentTransactions.push(hash);
+        this.sentTransactionRequests.push({ hash });
+        return hash;
+      }
+
       case 'eth_sendTransaction': {
         const [transaction] = params as [Record<string, unknown> | undefined];
         if (!transaction) {
           throw new Error('eth_sendTransaction requires a transaction object.');
         }
+
+        await this.assertRpcChainMatches();
 
         const request = {
           account: this.account,
@@ -156,5 +185,24 @@ export class PrivateKeyRpcClient implements RpcClient {
       default:
         return this.publicClient.request(request as never);
     }
+  }
+
+  // A mismatched rpcUrl/chain pair must fail loudly before anything is
+  // broadcast; success is cached, failures retry so a transient RPC error
+  // does not poison the client.
+  private async assertRpcChainMatches(): Promise<void> {
+    if (this.rpcChainVerified) {
+      return;
+    }
+
+    const reportedChainId = await this.publicClient.getChainId();
+    if (reportedChainId !== this.chain.id) {
+      throw new Error(
+        `The RPC endpoint reports chain id ${reportedChainId} but this client is configured for "${this.chain.name}" (id ${this.chain.id}). ` +
+          'Refusing to broadcast. Check the rpcUrl and chain options.',
+      );
+    }
+
+    this.rpcChainVerified = true;
   }
 }

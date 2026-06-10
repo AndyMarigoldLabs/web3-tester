@@ -35,15 +35,21 @@ export function createLiveFixtures(defaults = {}) {
                 privateKey: privateKey,
                 chain: options.chain ?? sepolia,
                 rpcUrl: resolveEnv([rpcUrlEnv, 'SEPOLIA_RPC_URL']),
+                allowMainnet: options.allowMainnet,
             }));
         },
-        wallet: async ({ page, liveClient, liveOptions }, use) => {
+        wallet: async ({ page, liveClient, liveOptions, baseURL }, use) => {
             const options = { ...defaults, ...liveOptions };
             const wallet = new MockWalletController(page, liveClient, {
                 accounts: [liveClient.account.address],
                 chainId: liveClient.chain.id,
-                autoApprove: true,
+                // A real key sits behind this provider, so nothing signs or connects
+                // until the test arms it (wallet.approveNext(...) for one request,
+                // wallet.autoApprove(true) or walletOptions for a whole test), and
+                // only frames on the dapp's own origin can reach the wallet at all.
+                autoApprove: false,
                 connected: true,
+                ...(baseURL ? { allowedOrigins: [baseURL] } : {}),
                 // Masquerade as MetaMask by default so production wallet selectors
                 // (wagmi / EIP-6963) detect the injected provider unmodified.
                 providerInfo: { name: 'MetaMask', rdns: 'io.metamask' },

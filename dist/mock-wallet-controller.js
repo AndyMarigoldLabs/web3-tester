@@ -32,6 +32,9 @@ const APPROVAL_GATED_METHODS = new Set([
     ...SIGNING_METHODS,
     ...PROMPT_METHODS,
     'eth_requestAccounts',
+    // Broadcasts someone else's signed bytes — still a spend the user must
+    // approve, and it must not slip through the unguarded default forward.
+    'eth_sendRawTransaction',
 ]);
 const normalizeParams = (params) => {
     if (params === undefined) {
@@ -43,6 +46,30 @@ const normalizeParams = (params) => {
     return [params];
 };
 const normalizeChainId = (chainId) => typeof chainId === 'number' ? toHex(chainId) : chainId;
+const toOrigin = (url) => {
+    try {
+        return new URL(url).origin;
+    }
+    catch {
+        return 'null';
+    }
+};
+// Frames whose URL carries no origin of its own; in the browser they inherit
+// the parent's (or opener's) origin.
+const isBlankFrameUrl = (url) => url === '' || url === 'about:blank' || url === 'about:srcdoc';
+// The browser-effective origin of the calling frame: blank frames inherit
+// from the nearest non-blank ancestor, blank popups from their opener.
+const resolveFrameOrigin = async (source) => {
+    let frame = source.frame;
+    while (frame && isBlankFrameUrl(frame.url())) {
+        frame = frame.parentFrame();
+    }
+    if (frame) {
+        return toOrigin(frame.url());
+    }
+    const opener = await source.page.opener().catch(() => null);
+    return opener ? toOrigin(opener.mainFrame().url()) : 'null';
+};
 export class MockWalletController {
     page;
     rpcClient;
@@ -52,7 +79,9 @@ export class MockWalletController {
     approveRequests;
     rejectionQueue = [];
     holdQueue = [];
+    approvalQueue = [];
     knownChainIds = new Set();
+    allowedOrigins;
     sentTransactions = [];
     sentTransactionRequests = [];
     constructor(page, rpcClient, options) {
@@ -63,6 +92,23 @@ export class MockWalletController {
         this.connected = options.connected ?? true;
         this.approveRequests = options.autoApprove ?? true;
         this.knownChainIds.add(this.chainId);
+        this.allowedOrigins = options.allowedOrigins?.map((entry) => {
+            // Strictly http(s): a scheme-less "localhost:3000" parses as protocol
+            // "localhost:" with origin "null", which would silently allowlist every
+            // null-origin frame and block the intended host.
+            let origin;
+            try {
+                const url = new URL(entry);
+                origin = /^https?:$/.test(url.protocol) ? url.origin : undefined;
+            }
+            catch {
+                origin = undefined;
+            }
+            if (!origin || origin === 'null') {
+                throw new Error(`allowedOrigins entry "${entry}" is not an http(s) URL or origin (expected e.g. "https://app.example.com").`);
+            }
+            return origin;
+        });
         if (this.accounts.length === 0) {
             throw new Error('MockWalletController requires at least one account.');
         }
@@ -92,8 +138,13 @@ export class MockWalletController {
         // target=_blank flows) get the provider too.
         const context = this.page.context();
         try {
-            await context.exposeFunction(rpcBridgeName, async (request) => {
+            // exposeBinding rather than exposeFunction so the handler can see which
+            // frame is calling and enforce allowedOrigins.
+            await context.exposeBinding(rpcBridgeName, async (source, request) => {
                 try {
+                    if (this.allowedOrigins) {
+                        this.assertOriginAllowed(await resolveFrameOrigin(source));
+                    }
                     const result = await this.handleRpcRequest(request);
                     return { ok: true, result };
                 }
@@ -114,6 +165,7 @@ export class MockWalletController {
             chainId: this.chainId,
             connected: this.connected,
             providers: this.providerInfos,
+            allowedOrigins: this.allowedOrigins,
         };
         const providerScript = buildInjectedProviderScript(config);
         await context.addInitScript(providerScript);
@@ -121,6 +173,23 @@ export class MockWalletController {
     }
     autoApprove(enabled = true) {
         this.approveRequests = enabled;
+    }
+    /**
+     * Arms approval for the next matching request while autoApprove is off —
+     * the explicit per-call grant for real-key (live) wallets. Queued
+     * rejections and holds still take precedence.
+     *
+     * A grant without `match` approves whatever matching request arrives first
+     * and never expires, so any page script (including a third-party include on
+     * an allowed origin) can race the dapp for it. Pass `match` to bind the
+     * grant to the expected payload, or use holdNextRequest() to inspect the
+     * request before deciding.
+     */
+    approveNext(methods, match) {
+        this.approvalQueue.push({
+            methods: typeof methods === 'string' ? [methods] : methods,
+            match,
+        });
     }
     async simulateRejection(methods = [...APPROVAL_GATED_METHODS], message = 'User rejected the request.') {
         this.rejectionQueue.push({
@@ -198,33 +267,39 @@ export class MockWalletController {
         }, { emitter: emitterName, eventName: event, eventPayload: payload })
             .catch(() => undefined)));
     }
-    consumeRejection(method) {
-        const index = this.rejectionQueue.findIndex((rule) => !rule.methods || rule.methods.includes(method));
+    consumeRule(queue, method) {
+        const index = queue.findIndex((rule) => !rule.methods || rule.methods.includes(method));
         if (index === -1) {
             return undefined;
         }
-        const [rule] = this.rejectionQueue.splice(index, 1);
+        const [rule] = queue.splice(index, 1);
         return rule;
     }
-    consumeHold(method) {
-        const index = this.holdQueue.findIndex((rule) => !rule.methods || rule.methods.includes(method));
-        if (index === -1) {
-            return undefined;
+    assertOriginAllowed(origin) {
+        if (!this.allowedOrigins) {
+            return;
         }
-        const [rule] = this.holdQueue.splice(index, 1);
-        return rule;
+        if (!this.allowedOrigins.includes(origin)) {
+            throw providerError(4100, `The wallet is not available to origin "${origin}" (allowedOrigins: ${this.allowedOrigins.join(', ')}).`);
+        }
     }
     async assertUserApproved(method, params) {
-        const hold = this.consumeHold(method);
+        const hold = this.consumeRule(this.holdQueue, method);
         if (hold) {
             // The test's explicit approve()/reject() decision is authoritative;
             // it bypasses autoApprove and queued rejection rules.
             await hold.intercept(method, params);
             return;
         }
-        const forcedRejection = this.consumeRejection(method);
+        const forcedRejection = this.consumeRule(this.rejectionQueue, method);
         if (forcedRejection) {
             throw providerError(4001, forcedRejection.message ?? 'User rejected the request.');
+        }
+        const armedIndex = this.approvalQueue.findIndex((rule) => (!rule.methods || rule.methods.includes(method)) &&
+            (!rule.match || rule.match(method, params)));
+        if (armedIndex !== -1) {
+            this.approvalQueue.splice(armedIndex, 1);
+            return;
         }
         if (!this.approveRequests && APPROVAL_GATED_METHODS.has(method)) {
             throw providerError(4001, 'User rejected the request.');
@@ -323,6 +398,13 @@ export class MockWalletController {
                     data: transaction.data,
                     value: transaction.value !== undefined ? String(transaction.value) : undefined,
                 });
+                return hash;
+            }
+            case 'eth_sendRawTransaction': {
+                await this.assertUserApproved(method, params);
+                const hash = (await this.rpcClient.request({ method, params }));
+                this.sentTransactions.push(hash);
+                this.sentTransactionRequests.push({ hash });
                 return hash;
             }
             case 'eth_signTypedData':

@@ -2,6 +2,42 @@
 
 ## Unreleased
 
+### Security
+
+- **Live wallets are now deny-by-default** (breaking): `createLiveFixtures`
+  builds the wallet with `autoApprove: false`, so signing, sending
+  (`eth_sendRawTransaction` included), and wallet prompts throw `4001` until
+  the test arms them — per request via the new
+  `wallet.approveNext(methods?, match?)` (the optional `match` predicate
+  binds the grant to an expected payload so another page script cannot race
+  it), or per test via `wallet.autoApprove(true)` /
+  `test.use({ liveOptions: { walletOptions: { autoApprove: true } } })`.
+  Page scripts (including third-party includes on the dapp under test) can
+  no longer spend or sign with the live key unprompted. The wallet still
+  starts pre-connected (`eth_accounts` answers), and `eth_requestAccounts`
+  requires arming even then.
+- **Origin scoping**: `MockWalletControllerOptions.allowedOrigins` (http(s)
+  origins only) restricts the wallet to frames on the listed origins: the
+  provider is not even installed elsewhere, and the RPC bridge — now an
+  `exposeBinding` that sees the calling frame — refuses out-of-scope frames
+  with `4100`. Same-origin `about:blank`/`srcdoc` children inherit their
+  parent's origin, like a real extension. When Playwright's `baseURL` is
+  configured, live fixtures default `allowedOrigins` to it, so embedded
+  third-party iframes never reach the wallet; without a `baseURL` every
+  frame is served unless `allowedOrigins` is set explicitly.
+- **`PrivateKeyRpcClient` chain guard** (breaking for non-testnet chains):
+  construction refuses chains that are neither `testnet: true` nor local dev
+  chains (31337/1337) unless `allowMainnet: true` is passed
+  (`createLiveFixtures({ allowMainnet })` passes it through), and the first
+  broadcast (`eth_sendTransaction` / `eth_sendRawTransaction`) verifies the
+  RPC endpoint's `eth_chainId` against the configured chain first.
+- **Anvil loopback enforcement** (breaking for non-loopback hosts):
+  `AnvilInstance.start()` refuses a non-loopback `host` (e.g.
+  `ANVIL_HOST=0.0.0.0`) — or a `--host` smuggled through `extraArgs` —
+  unless `allowNonLoopbackHost: true` / `ANVIL_ALLOW_NON_LOOPBACK=true` is
+  set. Anvil's admin RPC (impersonation, `setBalance`, fork URL + API key)
+  is unauthenticated.
+
 ### Added / Changed
 
 - **Current MetaMask (13.x "multichain" UI) is now fully supported** and is the

@@ -228,6 +228,101 @@ test.describe('approval controls', () => {
     expect(retry.ok).toBe(true);
   });
 
+  test('autoApprove(false) rejects the spend paths: eth_sendTransaction and eth_sendRawTransaction', async ({ page, wallet }) => {
+    wallet.autoApprove(false);
+
+    const send = await requestFromPage(page, 'eth_sendTransaction', [
+      { to: RECIPIENT, value: `0x${parseEther('0.01').toString(16)}` },
+    ]);
+    expect(send.ok).toBe(false);
+    expect((send as { error: ProviderErrorShape }).error.code).toBe(4001);
+
+    // Raw broadcasts must not slip through the default RPC forward.
+    const raw = await requestFromPage(page, 'eth_sendRawTransaction', ['0x02deadbeef']);
+    expect(raw.ok).toBe(false);
+    expect((raw as { error: ProviderErrorShape }).error.code).toBe(4001);
+
+    expect(wallet.sentTransactions).toHaveLength(0);
+  });
+
+  test('approveNext only arms the methods it names', async ({ page, wallet }) => {
+    wallet.autoApprove(false);
+    wallet.approveNext('eth_sendTransaction');
+
+    // A different gated method must not consume the grant…
+    const sign = await requestFromPage(page, 'personal_sign', [
+      '0x68656c6c6f',
+      wallet.primaryAccount,
+    ]);
+    expect(sign.ok).toBe(false);
+    expect((sign as { error: ProviderErrorShape }).error.code).toBe(4001);
+
+    // …which still covers the armed method afterwards.
+    const send = await requestFromPage(page, 'eth_sendTransaction', [
+      { to: RECIPIENT, value: `0x${parseEther('0.01').toString(16)}` },
+    ]);
+    expect(send.ok).toBe(true);
+  });
+
+  test('approveNext match predicate binds the grant to the expected payload', async ({ page, wallet }) => {
+    wallet.autoApprove(false);
+    wallet.approveNext('personal_sign', (_method, params) =>
+      String(params[0]).includes('aabbcc'),
+    );
+
+    const wrongPayload = await requestFromPage(page, 'personal_sign', [
+      '0xdeadbeef',
+      wallet.primaryAccount,
+    ]);
+    expect(wrongPayload.ok).toBe(false);
+    expect((wrongPayload as { error: ProviderErrorShape }).error.code).toBe(4001);
+
+    const expectedPayload = await requestFromPage(page, 'personal_sign', [
+      '0xaabbcc',
+      wallet.primaryAccount,
+    ]);
+    expect(expectedPayload.ok).toBe(true);
+  });
+
+  test('approveNext arms exactly one request while autoApprove is off', async ({ page, wallet }) => {
+    wallet.autoApprove(false);
+    wallet.approveNext('personal_sign');
+
+    const armed = await requestFromPage(page, 'personal_sign', [
+      '0x68656c6c6f',
+      wallet.primaryAccount,
+    ]);
+    expect(armed.ok).toBe(true);
+
+    // The grant is consumed: the next identical request is rejected again.
+    const unarmed = await requestFromPage(page, 'personal_sign', [
+      '0x68656c6c6f',
+      wallet.primaryAccount,
+    ]);
+    expect(unarmed.ok).toBe(false);
+    expect((unarmed as { error: ProviderErrorShape }).error.code).toBe(4001);
+  });
+
+  test('approveNext does not bypass a queued rejection', async ({ page, wallet }) => {
+    wallet.autoApprove(false);
+    wallet.approveNext('personal_sign');
+    await wallet.simulateRejection('personal_sign', 'Still no.');
+
+    const rejected = await requestFromPage(page, 'personal_sign', [
+      '0x68656c6c6f',
+      wallet.primaryAccount,
+    ]);
+    expect(rejected.ok).toBe(false);
+    expect((rejected as { error: ProviderErrorShape }).error.message).toBe('Still no.');
+
+    // The rejection consumed first; the armed approval still covers the retry.
+    const retried = await requestFromPage(page, 'personal_sign', [
+      '0x68656c6c6f',
+      wallet.primaryAccount,
+    ]);
+    expect(retried.ok).toBe(true);
+  });
+
   test('holdNextRequest keeps the request pending until approved', async ({ page, wallet }) => {
     const held = wallet.holdNextRequest('eth_sendTransaction');
 

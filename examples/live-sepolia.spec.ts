@@ -19,3 +19,19 @@ test('loads a live Sepolia wallet', async ({ page, wallet }) => {
     )
     .toEqual([wallet.primaryAccount]);
 });
+
+test('signs only after the test arms the request (deny-by-default)', async ({ page, wallet }) => {
+  await page.goto('/');
+
+  // Live wallets refuse signing until armed; arm exactly one personal_sign.
+  wallet.approveNext('personal_sign');
+
+  const signature = await page.evaluate(async () =>
+    (window as typeof window & { ethereum: EthereumProvider }).ethereum.request({
+      method: 'personal_sign',
+      params: ['0x68656c6c6f', null],
+    }),
+  );
+
+  expect(String(signature)).toMatch(/^0x/);
+});

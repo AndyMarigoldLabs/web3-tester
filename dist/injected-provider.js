@@ -5,6 +5,16 @@ export const emitterName = EMITTER_NAME;
 export const buildInjectedProviderScript = (config) => `
 (() => {
   const config = ${JSON.stringify(config)};
+
+  // Origin-scoped wallets never install in out-of-scope frames, so blocked
+  // pages cannot even read the account address or chain off the provider.
+  // window.origin (unlike location.origin or the frame URL) is the security
+  // origin, which about:blank/srcdoc children inherit from their parent —
+  // matching the bridge-side ancestor walk.
+  if (config.allowedOrigins && !config.allowedOrigins.includes(window.origin || location.origin)) {
+    return;
+  }
+
   const toNetworkVersion = (chainId) => String(Number(BigInt(chainId)));
 
   // EIP-1193 connectivity means "can the provider reach the chain", which is

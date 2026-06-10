@@ -64,6 +64,46 @@ test.describe('AnvilInstance lifecycle', () => {
   });
 });
 
+test.describe('host binding guard', () => {
+  // A nonexistent executable distinguishes the outcomes without ever binding
+  // a socket: the guard error fires before spawn, the executable error after.
+  // So even a guard regression cannot leak a node bound to 0.0.0.0.
+  const NO_BINARY = {
+    executable: '/nonexistent/anvil-binary',
+    silent: true,
+    timeoutMs: 5_000,
+  } as const;
+
+  test('refuses a non-loopback host without explicit opt-in', async () => {
+    await expect(AnvilInstance.start({ ...NO_BINARY, host: '0.0.0.0' })).rejects.toThrow(
+      /not a loopback interface/,
+    );
+  });
+
+  test('refuses --host smuggled through extraArgs', async () => {
+    await expect(
+      AnvilInstance.start({ ...NO_BINARY, extraArgs: ['--host', '0.0.0.0'] }),
+    ).rejects.toThrow(/not extraArgs --host/);
+    await expect(
+      AnvilInstance.start({ ...NO_BINARY, extraArgs: ['--host=0.0.0.0'] }),
+    ).rejects.toThrow(/not extraArgs --host/);
+  });
+
+  test('allowNonLoopbackHost opts in past the guard', async () => {
+    await expect(
+      AnvilInstance.start({ ...NO_BINARY, host: '0.0.0.0', allowNonLoopbackHost: true }),
+    ).rejects.toThrow(/Failed to start Anvil executable/);
+  });
+
+  test('loopback spellings pass the guard', async () => {
+    for (const host of ['127.0.0.1', '127.1.2.3', 'localhost', '::1']) {
+      await expect(AnvilInstance.start({ ...NO_BINARY, host })).rejects.toThrow(
+        /Failed to start Anvil executable/,
+      );
+    }
+  });
+});
+
 test.describe('ChainController helpers', () => {
   let anvil: AnvilInstance;
   let chain: ChainController;

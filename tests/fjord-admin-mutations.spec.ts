@@ -1,6 +1,9 @@
 import { expect, test } from '../src/live-fixtures.js';
 
 test.skip(!process.env.FJORD_PRIVATE_KEY, 'FJORD_PRIVATE_KEY is required for live Sepolia tests.');
+// Deliberate opt-in: this QA suite auto-signs with the dedicated Sepolia QA
+// key. Live wallets otherwise refuse approval-gated requests until armed.
+test.use({ liveOptions: { walletOptions: { autoApprove: true } } });
 test.skip(
   process.env.FJORD_ADMIN_MUTATE !== 'true',
   'Set FJORD_ADMIN_MUTATE=true to run live admin mutation QA.',

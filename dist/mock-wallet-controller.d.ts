@@ -25,6 +25,12 @@ export type MockWalletControllerOptions = {
     additionalProviders?: readonly Partial<WalletProviderInfo>[];
     autoApprove?: boolean;
     connected?: boolean;
+    /**
+     * When set, only frames whose origin matches an entry (URL or origin
+     * string) can reach the wallet; everything else gets a 4100 error. Leave
+     * unset to serve every frame, like a real extension.
+     */
+    allowedOrigins?: readonly string[];
 };
 export declare class MockWalletController {
     private readonly page;
@@ -35,7 +41,9 @@ export declare class MockWalletController {
     private approveRequests;
     private rejectionQueue;
     private holdQueue;
+    private approvalQueue;
     private readonly knownChainIds;
+    private readonly allowedOrigins?;
     readonly sentTransactions: Hex[];
     readonly sentTransactionRequests: SentTransactionRecord[];
     constructor(page: Page, rpcClient: RpcClient, options: MockWalletControllerOptions);
@@ -45,6 +53,18 @@ export declare class MockWalletController {
     get currentChainId(): Hex;
     injectMockProvider(): Promise<void>;
     autoApprove(enabled?: boolean): void;
+    /**
+     * Arms approval for the next matching request while autoApprove is off —
+     * the explicit per-call grant for real-key (live) wallets. Queued
+     * rejections and holds still take precedence.
+     *
+     * A grant without `match` approves whatever matching request arrives first
+     * and never expires, so any page script (including a third-party include on
+     * an allowed origin) can race the dapp for it. Pass `match` to bind the
+     * grant to the expected payload, or use holdNextRequest() to inspect the
+     * request before deciding.
+     */
+    approveNext(methods?: string | readonly string[], match?: (method: string, params: readonly unknown[]) => boolean): void;
     simulateRejection(methods?: string | readonly string[], message?: string): Promise<void>;
     /**
      * Intercepts the next matching request and keeps it pending until the test
@@ -64,8 +84,8 @@ export declare class MockWalletController {
     reconnect(): Promise<void>;
     switchNetwork(chainId: number | Hex): Promise<void>;
     private emit;
-    private consumeRejection;
-    private consumeHold;
+    private consumeRule;
+    private assertOriginAllowed;
     private assertUserApproved;
     private permissionResponse;
     private handleRpcRequest;

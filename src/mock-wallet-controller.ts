@@ -1,4 +1,4 @@
-import type { Page } from '@playwright/test';
+import type { Frame, Page } from '@playwright/test';
 import { toHex, type Address, type Hex } from 'viem';
 import { providerError, serializeRpcError } from './errors.js';
 import {
@@ -42,6 +42,12 @@ export type MockWalletControllerOptions = {
   additionalProviders?: readonly Partial<WalletProviderInfo>[];
   autoApprove?: boolean;
   connected?: boolean;
+  /**
+   * When set, only frames whose origin matches an entry (URL or origin
+   * string) can reach the wallet; everything else gets a 4100 error. Leave
+   * unset to serve every frame, like a real extension.
+   */
+  allowedOrigins?: readonly string[];
 };
 
 const DEFAULT_PROVIDER_INFO: WalletProviderInfo = {
@@ -80,6 +86,9 @@ const APPROVAL_GATED_METHODS = new Set([
   ...SIGNING_METHODS,
   ...PROMPT_METHODS,
   'eth_requestAccounts',
+  // Broadcasts someone else's signed bytes — still a spend the user must
+  // approve, and it must not slip through the unguarded default forward.
+  'eth_sendRawTransaction',
 ]);
 
 const normalizeParams = (params: JsonRpcParams): unknown[] => {
@@ -97,9 +106,42 @@ const normalizeParams = (params: JsonRpcParams): unknown[] => {
 const normalizeChainId = (chainId: number | Hex): Hex =>
   typeof chainId === 'number' ? toHex(chainId) : chainId;
 
+const toOrigin = (url: string): string => {
+  try {
+    return new URL(url).origin;
+  } catch {
+    return 'null';
+  }
+};
+
+// Frames whose URL carries no origin of its own; in the browser they inherit
+// the parent's (or opener's) origin.
+const isBlankFrameUrl = (url: string): boolean =>
+  url === '' || url === 'about:blank' || url === 'about:srcdoc';
+
+// The browser-effective origin of the calling frame: blank frames inherit
+// from the nearest non-blank ancestor, blank popups from their opener.
+const resolveFrameOrigin = async (source: { page: Page; frame: Frame }): Promise<string> => {
+  let frame: Frame | null = source.frame;
+  while (frame && isBlankFrameUrl(frame.url())) {
+    frame = frame.parentFrame();
+  }
+  if (frame) {
+    return toOrigin(frame.url());
+  }
+
+  const opener = await source.page.opener().catch(() => null);
+  return opener ? toOrigin(opener.mainFrame().url()) : 'null';
+};
+
 type HoldRule = {
   methods?: readonly string[];
   intercept: (method: string, params: readonly unknown[]) => Promise<void>;
+};
+
+type ApprovalRule = {
+  methods?: readonly string[];
+  match?: (method: string, params: readonly unknown[]) => boolean;
 };
 
 export class MockWalletController {
@@ -109,7 +151,9 @@ export class MockWalletController {
   private approveRequests: boolean;
   private rejectionQueue: RejectionRule[] = [];
   private holdQueue: HoldRule[] = [];
+  private approvalQueue: ApprovalRule[] = [];
   private readonly knownChainIds = new Set<Hex>();
+  private readonly allowedOrigins?: readonly string[];
 
   readonly sentTransactions: Hex[] = [];
   readonly sentTransactionRequests: SentTransactionRecord[] = [];
@@ -124,6 +168,26 @@ export class MockWalletController {
     this.connected = options.connected ?? true;
     this.approveRequests = options.autoApprove ?? true;
     this.knownChainIds.add(this.chainId);
+    this.allowedOrigins = options.allowedOrigins?.map((entry) => {
+      // Strictly http(s): a scheme-less "localhost:3000" parses as protocol
+      // "localhost:" with origin "null", which would silently allowlist every
+      // null-origin frame and block the intended host.
+      let origin: string | undefined;
+      try {
+        const url = new URL(entry);
+        origin = /^https?:$/.test(url.protocol) ? url.origin : undefined;
+      } catch {
+        origin = undefined;
+      }
+
+      if (!origin || origin === 'null') {
+        throw new Error(
+          `allowedOrigins entry "${entry}" is not an http(s) URL or origin (expected e.g. "https://app.example.com").`,
+        );
+      }
+
+      return origin;
+    });
 
     if (this.accounts.length === 0) {
       throw new Error('MockWalletController requires at least one account.');
@@ -162,10 +226,18 @@ export class MockWalletController {
     const context = this.page.context();
 
     try {
-      await context.exposeFunction(
+      // exposeBinding rather than exposeFunction so the handler can see which
+      // frame is calling and enforce allowedOrigins.
+      await context.exposeBinding(
         rpcBridgeName,
-        async (request: JsonRpcRequest): Promise<JsonRpcResponseEnvelope> => {
+        async (
+          source: { page: Page; frame: Frame },
+          request: JsonRpcRequest,
+        ): Promise<JsonRpcResponseEnvelope> => {
           try {
+            if (this.allowedOrigins) {
+              this.assertOriginAllowed(await resolveFrameOrigin(source));
+            }
             const result = await this.handleRpcRequest(request);
             return { ok: true, result };
           } catch (error) {
@@ -189,6 +261,7 @@ export class MockWalletController {
       chainId: this.chainId,
       connected: this.connected,
       providers: this.providerInfos,
+      allowedOrigins: this.allowedOrigins,
     };
 
     const providerScript = buildInjectedProviderScript(config);
@@ -200,6 +273,27 @@ export class MockWalletController {
 
   autoApprove(enabled = true): void {
     this.approveRequests = enabled;
+  }
+
+  /**
+   * Arms approval for the next matching request while autoApprove is off —
+   * the explicit per-call grant for real-key (live) wallets. Queued
+   * rejections and holds still take precedence.
+   *
+   * A grant without `match` approves whatever matching request arrives first
+   * and never expires, so any page script (including a third-party include on
+   * an allowed origin) can race the dapp for it. Pass `match` to bind the
+   * grant to the expected payload, or use holdNextRequest() to inspect the
+   * request before deciding.
+   */
+  approveNext(
+    methods?: string | readonly string[],
+    match?: (method: string, params: readonly unknown[]) => boolean,
+  ): void {
+    this.approvalQueue.push({
+      methods: typeof methods === 'string' ? [methods] : methods,
+      match,
+    });
   }
 
   async simulateRejection(
@@ -301,8 +395,11 @@ export class MockWalletController {
     );
   }
 
-  private consumeRejection(method: string): RejectionRule | undefined {
-    const index = this.rejectionQueue.findIndex(
+  private consumeRule<T extends { methods?: readonly string[] }>(
+    queue: T[],
+    method: string,
+  ): T | undefined {
+    const index = queue.findIndex(
       (rule) => !rule.methods || rule.methods.includes(method),
     );
 
@@ -310,25 +407,25 @@ export class MockWalletController {
       return undefined;
     }
 
-    const [rule] = this.rejectionQueue.splice(index, 1);
+    const [rule] = queue.splice(index, 1);
     return rule;
   }
 
-  private consumeHold(method: string): HoldRule | undefined {
-    const index = this.holdQueue.findIndex(
-      (rule) => !rule.methods || rule.methods.includes(method),
-    );
-
-    if (index === -1) {
-      return undefined;
+  private assertOriginAllowed(origin: string): void {
+    if (!this.allowedOrigins) {
+      return;
     }
 
-    const [rule] = this.holdQueue.splice(index, 1);
-    return rule;
+    if (!this.allowedOrigins.includes(origin)) {
+      throw providerError(
+        4100,
+        `The wallet is not available to origin "${origin}" (allowedOrigins: ${this.allowedOrigins.join(', ')}).`,
+      );
+    }
   }
 
   private async assertUserApproved(method: string, params: readonly unknown[]): Promise<void> {
-    const hold = this.consumeHold(method);
+    const hold = this.consumeRule(this.holdQueue, method);
     if (hold) {
       // The test's explicit approve()/reject() decision is authoritative;
       // it bypasses autoApprove and queued rejection rules.
@@ -336,9 +433,19 @@ export class MockWalletController {
       return;
     }
 
-    const forcedRejection = this.consumeRejection(method);
+    const forcedRejection = this.consumeRule(this.rejectionQueue, method);
     if (forcedRejection) {
       throw providerError(4001, forcedRejection.message ?? 'User rejected the request.');
+    }
+
+    const armedIndex = this.approvalQueue.findIndex(
+      (rule) =>
+        (!rule.methods || rule.methods.includes(method)) &&
+        (!rule.match || rule.match(method, params)),
+    );
+    if (armedIndex !== -1) {
+      this.approvalQueue.splice(armedIndex, 1);
+      return;
     }
 
     if (!this.approveRequests && APPROVAL_GATED_METHODS.has(method)) {
@@ -459,6 +566,14 @@ export class MockWalletController {
           data: transaction.data as Hex | undefined,
           value: transaction.value !== undefined ? String(transaction.value) : undefined,
         });
+        return hash;
+      }
+
+      case 'eth_sendRawTransaction': {
+        await this.assertUserApproved(method, params);
+        const hash = (await this.rpcClient.request({ method, params })) as Hex;
+        this.sentTransactions.push(hash);
+        this.sentTransactionRequests.push({ hash });
         return hash;
       }
 

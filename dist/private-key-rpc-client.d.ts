@@ -4,6 +4,8 @@ export type PrivateKeyRpcClientOptions = {
     privateKey: Hex;
     chain?: Chain;
     rpcUrl?: string;
+    /** Opt in to signing on production (non-testnet) chains. */
+    allowMainnet?: boolean;
 };
 export declare class PrivateKeyRpcClient implements RpcClient {
     readonly account: Account;
@@ -17,7 +19,9 @@ export declare class PrivateKeyRpcClient implements RpcClient {
     }>;
     private readonly publicClient;
     private readonly walletClient;
+    private rpcChainVerified;
     constructor(options: PrivateKeyRpcClientOptions);
     request(request: JsonRpcRequest): Promise<unknown>;
+    private assertRpcChainMatches;
 }
 //# sourceMappingURL=private-key-rpc-client.d.ts.map

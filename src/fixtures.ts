@@ -54,6 +54,7 @@ export const test = base.extend<Web3Fixtures, Web3WorkerFixtures>({
         executable: resolveAnvilExecutable(),
         dockerImage: process.env.ANVIL_DOCKER_IMAGE,
         host: process.env.ANVIL_HOST ?? '127.0.0.1',
+        allowNonLoopbackHost: process.env.ANVIL_ALLOW_NON_LOOPBACK === 'true',
         chainId: Number(process.env.ANVIL_CHAIN_ID ?? foundry.id),
         forkUrl: process.env.ANVIL_FORK_URL,
         silent: process.env.ANVIL_SILENT !== 'false',

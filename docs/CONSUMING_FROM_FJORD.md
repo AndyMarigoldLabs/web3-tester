@@ -93,6 +93,15 @@ test('loads the Sepolia account', async ({ page, wallet }) => {
 });
 ```
 
+As of 0.2.x live wallets are deny-by-default: `eth_requestAccounts`,
+`personal_sign`, `eth_sendTransaction`, `eth_sendRawTransaction`, and
+`wallet_*` prompts throw `4001` until armed via `wallet.approveNext(method)`
+(or `test.use({ liveOptions: { walletOptions: { autoApprove: true } } })` as
+a deliberate opt-in). And when the Playwright config sets a `baseURL` — as
+the example above does — the injected provider only exists on that origin;
+override with `walletOptions.allowedOrigins` if a journey legitimately
+crosses origins.
+
 Run with:
 
 ```powershell

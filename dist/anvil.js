@@ -3,6 +3,7 @@ import { once } from 'node:events';
 import { createTestClient, http, publicActions, walletActions, } from 'viem';
 import { foundry } from 'viem/chains';
 const DEFAULT_MNEMONIC = 'test test test test test test test test test test test junk';
+const LOOPBACK_HOST_PATTERN = /^(127(\.\d{1,3}){3}|localhost|::1|\[::1\])$/i;
 const DEFAULT_FOUNDRY_DOCKER_IMAGE = 'ghcr.io/foundry-rs/foundry:latest';
 const CONTAINER_ANVIL_PORT = 8545;
 const sleep = (ms, options = {}) => new Promise((resolve) => {
@@ -68,6 +69,17 @@ export class AnvilInstance {
     }
     static async start(options = {}) {
         const host = options.host ?? '127.0.0.1';
+        // Anvil's --host is repeatable and accumulates, so a --host smuggled in
+        // through extraArgs would bind every interface despite the loopback
+        // default emitted first.
+        const extraArgsOverrideHost = options.extraArgs?.some((arg) => arg === '--host' || arg.startsWith('--host='));
+        if ((!LOOPBACK_HOST_PATTERN.test(host) || extraArgsOverrideHost) && !options.allowNonLoopbackHost) {
+            throw new Error(extraArgsOverrideHost
+                ? 'Pass the bind address through the `host` option, not extraArgs --host, so the loopback guard can validate it (or set allowNonLoopbackHost: true).'
+                : `Anvil host "${host}" is not a loopback interface. A dev chain bound beyond loopback exposes its ` +
+                    'unauthenticated admin RPC (impersonation, setBalance, any fork URL and its API key) to the network. ' +
+                    'Pass allowNonLoopbackHost: true (ANVIL_ALLOW_NON_LOOPBACK=true with the bundled fixtures) if this is intentional.');
+        }
         const port = options.port ?? 8545;
         const chainId = options.chainId ?? foundry.id;
         const runtime = options.runtime ?? 'binary';
