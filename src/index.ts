@@ -10,12 +10,15 @@ export type {
   ChainControllerOptions,
 } from './anvil.js';
 export type {
+  HeldRequest,
   MockWalletControllerOptions,
   RejectionRule,
+  SentTransactionRecord,
 } from './mock-wallet-controller.js';
 export type {
   JsonRpcRequest,
   MockWalletConfig,
+  RpcClient,
   WalletProviderInfo,
 } from './types.js';
 export type { PrivateKeyRpcClientOptions } from './private-key-rpc-client.js';
