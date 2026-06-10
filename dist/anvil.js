@@ -5,6 +5,7 @@ import { foundry } from 'viem/chains';
 import { privateKeyToAccount } from 'viem/accounts';
 import { TEST_ERC20_ABI, TEST_ERC20_BYTECODE } from './contracts/test-erc20.js';
 import { dealErc20, getErc20Balance } from './erc20.js';
+import { waitForDecodedTransaction, } from './transactions.js';
 const ZERO_ADDRESS = '0x0000000000000000000000000000000000000000';
 const EIP7702_DESIGNATOR_PREFIX = '0xef0100';
 const toLocalAccount = (account) => typeof account === 'string' ? privateKeyToAccount(account) : account;
@@ -263,6 +264,13 @@ export class ChainController {
     }
     async mine(blocks = 1) {
         await this.client.mine({ blocks });
+    }
+    /**
+     * Waits for the receipt and returns it with decoded logs (when an abi is
+     * given) and, for reverted transactions, the recovered revert reason.
+     */
+    async waitForTransaction(hash, options) {
+        return waitForDecodedTransaction(this.client, hash, options);
     }
     // ── Cheatcode-style helpers ─────────────────────────────────────────────
     // These bypass the wallet entirely (like forge cheatcodes): no approval

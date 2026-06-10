@@ -17,6 +17,7 @@ export default defineConfig({
         '**/erc20.spec.ts',
         '**/fixtures-multichain.spec.ts',
         '**/live-fixtures.spec.ts',
+        '**/matchers.spec.ts',
         '**/mock-wallet.spec.ts',
         '**/mock-wallet-multichain.spec.ts',
         '**/multi-user.spec.ts',

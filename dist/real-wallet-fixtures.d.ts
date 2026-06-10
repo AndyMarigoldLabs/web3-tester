@@ -31,5 +31,5 @@ export type RealWalletFixtures = {
  * the persistent extension context.
  */
 export declare const test: import("@playwright/test").TestType<import("@playwright/test").PlaywrightTestArgs & import("@playwright/test").PlaywrightTestOptions & RealWalletFixtures, import("@playwright/test").PlaywrightWorkerArgs & import("@playwright/test").PlaywrightWorkerOptions>;
-export { expect } from '@playwright/test';
+export { expect } from './matchers.js';
 //# sourceMappingURL=real-wallet-fixtures.d.ts.map

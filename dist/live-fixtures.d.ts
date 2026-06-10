@@ -34,5 +34,5 @@ export type LiveWeb3Fixtures = {
  */
 export declare function createLiveFixtures(defaults?: LiveFixtureOptions): import("@playwright/test").TestType<import("@playwright/test").PlaywrightTestArgs & import("@playwright/test").PlaywrightTestOptions & LiveWeb3Fixtures, import("@playwright/test").PlaywrightWorkerArgs & import("@playwright/test").PlaywrightWorkerOptions>;
 export declare const test: import("@playwright/test").TestType<import("@playwright/test").PlaywrightTestArgs & import("@playwright/test").PlaywrightTestOptions & LiveWeb3Fixtures, import("@playwright/test").PlaywrightWorkerArgs & import("@playwright/test").PlaywrightWorkerOptions>;
-export { expect } from '@playwright/test';
+export { expect } from './matchers.js';
 //# sourceMappingURL=live-fixtures.d.ts.map

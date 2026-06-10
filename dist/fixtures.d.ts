@@ -53,5 +53,5 @@ export type MockWalletFixtureOptions = Omit<Partial<MockWalletControllerOptions>
     accountIndexes?: readonly number[];
 };
 export declare const test: import("@playwright/test").TestType<import("@playwright/test").PlaywrightTestArgs & import("@playwright/test").PlaywrightTestOptions & Web3Fixtures, import("@playwright/test").PlaywrightWorkerArgs & import("@playwright/test").PlaywrightWorkerOptions & Web3WorkerFixtures>;
-export { expect } from '@playwright/test';
+export { expect } from './matchers.js';
 //# sourceMappingURL=fixtures.d.ts.map

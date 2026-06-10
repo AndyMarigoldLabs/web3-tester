@@ -28,6 +28,14 @@
       "types": "./dist/erc20.d.ts",
       "import": "./dist/erc20.js"
     },
+    "./matchers": {
+      "types": "./dist/matchers.d.ts",
+      "import": "./dist/matchers.js"
+    },
+    "./transactions": {
+      "types": "./dist/transactions.d.ts",
+      "import": "./dist/transactions.js"
+    },
     "./fixtures": {
       "types": "./dist/fixtures.d.ts",
       "import": "./dist/fixtures.js"

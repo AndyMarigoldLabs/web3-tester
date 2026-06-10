@@ -2,6 +2,27 @@
 
 ## Unreleased
 
+### Added — transaction assertion matchers (0.3.0)
+
+- The `expect` re-exported by every fixture module is now extended with
+  web3 matchers (hardhat-chai-matchers parity): `toEmitEvent` (named/
+  positional/predicate args, `anyValue`, `count`), `toChangeBalance(s)`
+  (sender fee excluded by default, `includeFee` opt-in),
+  `toChangeTokenBalance(s)`, `toBeReverted`/`toBeRevertedWith(string|RegExp)`/
+  `toBeRevertedWithCustomError`/`toBeRevertedWithPanic`, and
+  `toHaveTokenBalance` — with decoded-event failure messages. Wallet
+  approval failures are detected by message text (EIP-1193 codes do not
+  survive `page.evaluate` serialization) and rethrown with a hint, never
+  mistaken for reverts.
+- `chain.waitForTransaction(hash, { abi })` returns the receipt with decoded
+  logs and a recovered revert reason (parent-block replay with a
+  `debug_traceTransaction` fallback); `PrivateKeyRpcClient.client` exposes
+  the read-only viem client so live mode satisfies `ChainLike`.
+- New `./matchers` and `./transactions` subpaths (`web3Matchers`, `anyValue`,
+  `extractRevertInfo`, `waitForDecodedTransaction`); compose with consumer
+  matchers via `mergeExpects` or matcher spread. The re-exported `expect`'s
+  type widens from `Expect<{}>` — purely additive at runtime.
+
 ### Added — EIP-5792 batch calls + EIP-7702 (0.3.0)
 
 - Mock wallet implements the four EIP-5792 methods with Final-spec error

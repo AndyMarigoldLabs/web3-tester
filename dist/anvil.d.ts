@@ -2,6 +2,7 @@ import { type Abi, type Address, type Chain, type Hex, type PublicActions, type 
 import type { Account, SignedAuthorization } from 'viem';
 import { TEST_ERC20_ABI } from './contracts/test-erc20.js';
 import { type DealErc20Options } from './erc20.js';
+import { type DecodedTransaction } from './transactions.js';
 import type { JsonRpcRequest, RpcClient } from './types.js';
 export type DeployContractOptions = {
     abi: Abi;
@@ -102,6 +103,14 @@ export declare class ChainController implements RpcClient {
     setBalance(address: Address, value: bigint): Promise<void>;
     fastForward(seconds: number): Promise<void>;
     mine(blocks?: number): Promise<void>;
+    /**
+     * Waits for the receipt and returns it with decoded logs (when an abi is
+     * given) and, for reverted transactions, the recovered revert reason.
+     */
+    waitForTransaction(hash: Hex, options?: {
+        abi?: Abi;
+        timeoutMs?: number;
+    }): Promise<DecodedTransaction>;
     private readonly erc20SlotCache;
     deployContract(options: DeployContractOptions): Promise<DeployedContract>;
     deployErc20(options?: DeployErc20Options): Promise<DeployedErc20>;

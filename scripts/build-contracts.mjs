@@ -39,6 +39,8 @@ export const TEST_ERC20_BYTECODE = '${erc20.bytecode.object}' as const;
 
 const vyper = artifact('TestFixtures.sol', 'VyperLayoutToken');
 const shares = artifact('TestFixtures.sol', 'SharesToken');
+const emitter = artifact('TestFixtures.sol', 'EventEmitter');
+const reverter = artifact('TestFixtures.sol', 'Reverter');
 writeFileSync(
   join(repoRoot, 'tests', 'contracts', 'fixtures.ts'),
   `${header([['TestFixtures.sol', sourceHash('TestFixtures.sol')]])}
@@ -46,6 +48,10 @@ export const VYPER_LAYOUT_TOKEN_ABI = ${JSON.stringify(vyper.abi)} as const;
 export const VYPER_LAYOUT_TOKEN_BYTECODE = '${vyper.bytecode.object}' as const;
 export const SHARES_TOKEN_ABI = ${JSON.stringify(shares.abi)} as const;
 export const SHARES_TOKEN_BYTECODE = '${shares.bytecode.object}' as const;
+export const EVENT_EMITTER_ABI = ${JSON.stringify(emitter.abi)} as const;
+export const EVENT_EMITTER_BYTECODE = '${emitter.bytecode.object}' as const;
+export const REVERTER_ABI = ${JSON.stringify(reverter.abi)} as const;
+export const REVERTER_BYTECODE = '${reverter.bytecode.object}' as const;
 `,
 );
 

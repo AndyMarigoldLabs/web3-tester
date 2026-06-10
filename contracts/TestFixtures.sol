@@ -72,3 +72,37 @@ contract SharesToken {
         _shares[to] += shares;
     }
 }
+
+/// Test-only fixture for event matchers. Never shipped.
+contract EventEmitter {
+    event Ping(address indexed sender, uint256 indexed id, string note);
+
+    function ping(uint256 id, string calldata note) external {
+        emit Ping(msg.sender, id, note);
+    }
+
+    function pingTwice(uint256 id, string calldata note) external {
+        emit Ping(msg.sender, id, note);
+        emit Ping(msg.sender, id + 1, note);
+    }
+}
+
+/// Test-only fixture for revert matchers. Never shipped.
+contract Reverter {
+    error CapExceeded(uint256 requested, uint256 cap);
+
+    function revertWithReason() external pure {
+        revert("boom");
+    }
+
+    function revertWithCustom(uint256 requested) external pure {
+        revert CapExceeded(requested, 100);
+    }
+
+    function panicWithAssert() external pure {
+        uint256 zero = 0;
+        assert(zero == 1);
+    }
+
+    function succeed() external {}
+}

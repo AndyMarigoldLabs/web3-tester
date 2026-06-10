@@ -65,5 +65,6 @@ export const test = base.extend({
         await page.close().catch(() => undefined);
     },
 });
-export { expect } from '@playwright/test';
+// The web3-extended expect: every matcher from ./matchers.js, zero migration.
+export { expect } from './matchers.js';
 //# sourceMappingURL=real-wallet-fixtures.js.map

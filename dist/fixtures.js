@@ -227,5 +227,6 @@ const buildControllerOptions = (chain, chains, accounts, overrides) => {
         ...(Object.keys(mergedChains).length > 0 ? { chains: mergedChains } : {}),
     };
 };
-export { expect } from '@playwright/test';
+// The web3-extended expect: every matcher from ./matchers.js, zero migration.
+export { expect } from './matchers.js';
 //# sourceMappingURL=fixtures.js.map

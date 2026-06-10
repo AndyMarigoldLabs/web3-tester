@@ -22,6 +22,11 @@ import { privateKeyToAccount } from 'viem/accounts';
 import type { Account, SignedAuthorization } from 'viem';
 import { TEST_ERC20_ABI, TEST_ERC20_BYTECODE } from './contracts/test-erc20.js';
 import { dealErc20, getErc20Balance, type DealErc20Options, type Erc20SlotInfo } from './erc20.js';
+import {
+  waitForDecodedTransaction,
+  type DecodedTransaction,
+  type ReadClient,
+} from './transactions.js';
 import type { JsonRpcRequest, RpcClient } from './types.js';
 
 export type DeployContractOptions = {
@@ -434,6 +439,17 @@ export class ChainController implements RpcClient {
 
   async mine(blocks = 1): Promise<void> {
     await this.client.mine({ blocks });
+  }
+
+  /**
+   * Waits for the receipt and returns it with decoded logs (when an abi is
+   * given) and, for reverted transactions, the recovered revert reason.
+   */
+  async waitForTransaction(
+    hash: Hex,
+    options?: { abi?: Abi; timeoutMs?: number },
+  ): Promise<DecodedTransaction> {
+    return waitForDecodedTransaction(this.client as unknown as ReadClient, hash, options);
   }
 
   // ── Cheatcode-style helpers ─────────────────────────────────────────────

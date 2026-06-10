@@ -235,6 +235,11 @@ export class PrivateKeyRpcClient implements RpcClient {
     }
   }
 
+  /** Read-only viem public client backing this wallet (matchers, receipt waits). */
+  get client() {
+    return this.publicClient;
+  }
+
   /** Signs an EIP-7702 authorization with this client's local account. */
   async signAuthorization(options: {
     contractAddress: Hex;

@@ -112,4 +112,5 @@ export const test = base.extend<RealWalletFixtures>({
   },
 });
 
-export { expect } from '@playwright/test';
+// The web3-extended expect: every matcher from ./matchers.js, zero migration.
+export { expect } from './matchers.js';

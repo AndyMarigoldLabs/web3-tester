@@ -406,6 +406,28 @@ Supported wallet methods include:
 
 `eth_signTypedData` (legacy v1) returns `4200`.
 
+## Transaction assertion matchers
+
+The `expect` exported by every fixture module (and `./matchers`) carries
+hardhat-chai-matchers-style web3 matchers. The chain is always an explicit
+argument (`ChainLike`: a `ChainController`, a `PrivateKeyRpcClient` — via its
+`client` getter — or any viem `PublicClient`), so the matchers are
+mode-agnostic.
+
+| Matcher | Receiver | Description |
+| --- | --- | --- |
+| `toEmitEvent(chain, abi, eventName, { args?, address?, count?, timeout? })` | tx hash / `{ hash }` / promise | Decodes receipt logs; `args` named or positional (positional `undefined` = wildcard), values may be predicates (`anyValue` exported). `count` asserts an exact match count; default ≥ 1, and `.not` asserts zero matching. Failure lists every decoded event (and undecodable logs by `topic0`), flagging reverted receipts. |
+| `toChangeBalance(s)(chain, …, { includeFee? })` | tx ref | Balance delta between the receipt block and its parent. The sender's gas fee is **excluded** by default (hardhat parity); `includeFee: true` includes it. Multi-tx blocks are flagged in failures. |
+| `toChangeTokenBalance(s)(chain, token, …)` | tx ref | Same, reading `balanceOf` at the two heights. |
+| `toBeReverted(chain)` / `toBeRevertedWith(chain, reason\|RegExp)` / `toBeRevertedWithCustomError(chain, abi, name, { args? })` / `toBeRevertedWithPanic(chain, code?)` | promise, function, or tx ref | Rejected promises decode revert data from the error's cause chain; mined reverted transactions replay at the parent block with a `debug_traceTransaction` fallback. Exact-string or RegExp reasons (hardhat semantics). Wallet approval failures (4001/4100) are rethrown with a hint, never counted as reverts. |
+| `toHaveTokenBalance(chain, token, expected)` | holder address | Single `balanceOf` read; `expected` exact or predicate. Non-retrying — use `expect.poll(() => holder).toHaveTokenBalance(…)` for eventual consistency. Refuses 32-byte receivers. |
+
+Compose with your own matchers via `mergeExpects(web3Expect, yours)` or
+`baseExpect.extend({ ...web3Matchers, ...yours })`. Matchers surface on
+`expect(x)` only when `x` is typed `Hex`/`Address` (everything the library
+hands out already is). `chain.waitForTransaction(hash, { abi })` returns the
+receipt with decoded logs and the recovered revert reason.
+
 ## ChainController
 
 `ChainController` wraps a Viem Anvil test client.

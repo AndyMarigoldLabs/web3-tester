@@ -65,5 +65,6 @@ export function createLiveFixtures(defaults = {}) {
     });
 }
 export const test = createLiveFixtures();
-export { expect } from '@playwright/test';
+// The web3-extended expect: every matcher from ./matchers.js, zero migration.
+export { expect } from './matchers.js';
 //# sourceMappingURL=live-fixtures.js.map

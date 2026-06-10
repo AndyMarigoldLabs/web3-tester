@@ -173,6 +173,10 @@ export class PrivateKeyRpcClient {
                 return this.publicClient.request(request);
         }
     }
+    /** Read-only viem public client backing this wallet (matchers, receipt waits). */
+    get client() {
+        return this.publicClient;
+    }
     /** Signs an EIP-7702 authorization with this client's local account. */
     async signAuthorization(options) {
         return this.walletClient.signAuthorization({
