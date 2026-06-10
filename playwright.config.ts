@@ -25,6 +25,8 @@ export default defineConfig({
         '**/provider-injection.spec.ts',
         '**/real-wallet.spec.ts',
         '**/real-wallet-smoke.spec.ts',
+        '**/walletconnect.spec.ts',
+        '**/walletconnect-live.spec.ts',
       ],
       use: {
         ...devices['Desktop Chrome'],

@@ -411,12 +411,14 @@ export class MockWalletController {
    * WalletConnect session). Approval gating applies exactly as for injected
    * requests. When allowedOrigins is configured, `context.origin` is
    * enforced; an absent origin counts as "null" and is refused.
+   * `bypassOriginCheck` is the deliberate opt-out for transports that cannot
+   * attest origins — approval gating still applies.
    */
   async handleExternalRequest(
     request: JsonRpcRequest,
-    context: { origin?: string } = {},
+    context: { origin?: string; bypassOriginCheck?: boolean } = {},
   ): Promise<unknown> {
-    if (this.allowedOrigins) {
+    if (this.allowedOrigins && !context.bypassOriginCheck) {
       this.assertOriginAllowed(context.origin !== undefined ? toOrigin(context.origin) : 'null');
     }
     return this.handleRpcRequest(request);

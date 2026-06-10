@@ -2,6 +2,26 @@
 
 ## Unreleased
 
+### Added — WalletConnect / AppKit simulation (0.3.0)
+
+- `@marigoldlabs/web3-tester/walletconnect`: `WalletConnectWallet` pairs with
+  a dapp's AppKit/WC v2 modal (URI auto-extracted from `wui-qr-code`, with
+  `selector`/`getUri` escape hatches) and dispatches every session proposal
+  (as a synthetic `eth_requestAccounts`) and `session_request` through the
+  `MockWalletController` — approval gating, origin scoping
+  (verifyContext-based, `enforceOrigins: false` opt-out), and transaction
+  recording govern WC traffic exactly like injected traffic. Wallet events
+  push to sessions; errors cross the relay verbatim; SignClient runs with
+  in-memory storage and `disableRequestQueue` (holds cannot starve later
+  requests); One-Click Auth dapps take the `wc_sessionPropose` fallback by
+  invariant. `@walletconnect/sign-client`/`utils`/`types` are optional peers
+  (>=2.17 <3) — the core install stays dependency-free; they are also
+  devDependencies here, which git-installs will fetch (documented cost).
+- The relay suite is opt-in via `WEB3_TESTER_WC_PROJECT_ID`; gating, error
+  mapping, namespaces, and URI extraction are covered hermetically.
+- `MockWalletController.handleExternalRequest` gains a documented
+  `bypassOriginCheck` opt-out for transports that cannot attest origins.
+
 ### Added — transaction assertion matchers (0.3.0)
 
 - The `expect` re-exported by every fixture module is now extended with

@@ -12,6 +12,7 @@ The injected fixtures test dApp behavior with a programmable EIP-1193 provider. 
 - EIP-6963 provider announcements (one distinct provider object per wallet) for wallet selector testing.
 - Viem-backed chain helpers for impersonation, balance setup, time travel, and block mining.
 - Optional live-chain fixtures for controlled testnet QA with a runtime-only private key (`createLiveFixtures` for custom chains/env names).
+- Optional WalletConnect/AppKit simulation (`@marigoldlabs/web3-tester/walletconnect`): a headless WC v2 wallet peer that pairs with the dapp's QR modal and answers every request through the same wallet gating — needs the optional `@walletconnect/*` peers and a Reown project id.
 - Real MetaMask mode: pinned-version extension download (`prepareMetaMaskExtension`), one-time onboarding into a cached profile with disposable per-test clones (`buildWalletProfile`/`cloneWalletProfile`), Playwright fixtures (`@marigoldlabs/web3-tester/real-wallet-fixtures`), wallet-side network add/switch, dapp connection, signature/transaction confirmation and rejection, and token approval helpers — validated end to end by an opt-in smoke suite against the pinned MetaMask build.
 - Fjord v4 QA specs (separate `fjord` Playwright project) documenting the current state of `https://v4.fjordfoundry.com`.
 
@@ -200,6 +201,7 @@ Copy `.env.example` for local reference. Do not commit real private keys.
 | `WEB3_TESTER_REAL_WALLET_PASSWORD` | deterministic test password | MetaMask password used to unlock profiles. |
 | `WEB3_TESTER_REAL_WALLET_SECRET_RECOVERY_PHRASE` | unset | Seed phrase used to build the cached real-wallet profile. |
 | `WEB3_TESTER_REAL_WALLET_SMOKE` | unset | Set `true` to run the real-MetaMask smoke suite. |
+| `WEB3_TESTER_WC_PROJECT_ID` | unset | Reown project id; set to run the opt-in WalletConnect relay suite. |
 | `DAPP_URL` | `https://v4.fjordfoundry.com` | Base URL for the Fjord QA project. |
 | `FJORD_*` gates | unset | Fjord QA mutation gates — see `docs/FJORD_LIVE_QA.md`. |
 

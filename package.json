@@ -32,6 +32,10 @@
       "types": "./dist/matchers.d.ts",
       "import": "./dist/matchers.js"
     },
+    "./walletconnect": {
+      "types": "./dist/walletconnect.d.ts",
+      "import": "./dist/walletconnect.js"
+    },
     "./transactions": {
       "types": "./dist/transactions.d.ts",
       "import": "./dist/transactions.js"
@@ -89,11 +93,22 @@
   },
   "peerDependencies": {
     "@playwright/test": ">=1.56.0",
+    "@walletconnect/sign-client": ">=2.17 <3",
+    "@walletconnect/types": ">=2.17 <3",
+    "@walletconnect/utils": ">=2.17 <3",
     "viem": ">=2.39.3 <3"
+  },
+  "peerDependenciesMeta": {
+    "@walletconnect/sign-client": { "optional": true },
+    "@walletconnect/types": { "optional": true },
+    "@walletconnect/utils": { "optional": true }
   },
   "devDependencies": {
     "@playwright/test": "^1.56.1",
     "@types/node": "^24.10.1",
+    "@walletconnect/sign-client": "^2.23.9",
+    "@walletconnect/types": "^2.23.9",
+    "@walletconnect/utils": "^2.23.9",
     "typescript": "^5.9.3",
     "viem": "^2.52.0"
   }

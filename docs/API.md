@@ -406,6 +406,58 @@ Supported wallet methods include:
 
 `eth_signTypedData` (legacy v1) returns `4200`.
 
+## WalletConnect
+
+`@marigoldlabs/web3-tester/walletconnect` is a headless WalletConnect v2
+wallet peer that pairs with a dapp's AppKit/WC modal and answers every
+`session_request` through the `MockWalletController` — so
+`approveNext`/`autoApprove`/`holdNextRequest`/`simulateRejection` and
+`sentTransactions`/`waitForNextTransaction` govern WC traffic exactly like
+injected traffic, in mock and live modes. Requires the optional peers
+(`npm i -D @walletconnect/sign-client @walletconnect/utils
+@walletconnect/types`); the core install stays dependency-free, but note
+the git-install cost: they land in this repo's devDependencies, which
+consumers' `npm install <git>` will fetch.
+
+```ts
+const wc = await WalletConnectWallet.create({
+  wallet,
+  projectId: process.env.WEB3_TESTER_WC_PROJECT_ID!,
+});
+try {
+  await page.getByText('WalletConnect').click();   // open the QR view
+  wallet.approveNext('eth_requestAccounts');       // arms the session approval
+  const session = await wc.connect(page);          // wui-qr-code uri → pair → settle
+  // …drive the dapp; session_requests hit the wallet's gating…
+} finally {
+  await wc.close();                                // always — relay teardown
+}
+```
+
+Semantics: session proposals gate as a synthetic `eth_requestAccounts`
+(`approveNext` match callbacks receive the proposal payload — proposer
+metadata, verified origin — for targeting); requests on approved-but-inactive
+chains switch the wallet first (single-active-chain semantics, `chainChanged`
+emitted); off-namespace chains answer `5100`; wallet errors
+(4001/4100/4200/4902/-32602) cross the relay verbatim. `allowedOrigins` is
+enforced against the relay's verifyContext origin (`enforceOrigins: false`
+opts out — when Verify reports UNKNOWN validation the origin is unattested).
+Wallet events push to sessions (`chainChanged` extends the namespace first,
+like MetaMask mobile); `wallet.disconnect()` ends WC sessions too. One-Click
+Auth (SIWE) dapps take the `wc_sessionPropose` fallback — this wallet
+deliberately never registers a `session_authenticate` listener. Storage is
+in-memory (nothing on disk); SignClient init sets `disableRequestQueue` so a
+held request cannot starve later ones.
+
+URI extraction reads AppKit's `wui-qr-code[uri]` attribute (the same
+contract Reown's own E2E suite uses, but still an internal — pass
+`selector` or a `getUri(page)` hook for other modals; AppKit's
+`copy-wc2-uri` button is the clipboard fallback).
+
+Pairing needs the real relay: the live suite is env-gated on
+`WEB3_TESTER_WC_PROJECT_ID` (free Reown project id) and never gates CI; the
+gating/error/URI logic is covered hermetically.
+
 ## Transaction assertion matchers
 
 The `expect` exported by every fixture module (and `./matchers`) carries
