@@ -1,10 +1,23 @@
 {
   "name": "@marigoldlabs/web3-tester",
-  "version": "0.4.0",
-  "private": true,
+  "version": "0.4.1",
   "type": "module",
   "description": "A Playwright, Anvil, and Viem based Web3 E2E harness with an injected programmable wallet provider.",
-  "license": "UNLICENSED",
+  "license": "MIT",
+  "keywords": [
+    "playwright",
+    "anvil",
+    "viem",
+    "metamask",
+    "walletconnect",
+    "web3",
+    "ethereum",
+    "e2e",
+    "testing",
+    "wallet",
+    "eip-1193",
+    "dapp"
+  ],
   "repository": {
     "type": "git",
     "url": "git+https://github.com/AndyMarigoldLabs/web3-tester.git"
@@ -75,9 +88,9 @@
   },
   "files": [
     "dist",
-    "docs",
     "examples",
     "README.md",
+    "LICENSE",
     ".env.example"
   ],
   "scripts": {

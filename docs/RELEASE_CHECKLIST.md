@@ -57,13 +57,23 @@ git push -u origin main
 
 ## Distribute
 
-The package is deliberately private (`"private": true`, UNLICENSED): npm
-refuses to publish it. Consumers install straight from git — `dist/` is
-committed and CI gates on its freshness:
+The package is published publicly on npm under MIT (since 0.4.1). `dist/` is
+committed and CI gates on its freshness. To publish a new version:
+
+```bash
+npm login                 # once, with publish rights to the @marigoldlabs scope
+npm run verify            # typecheck + build + hermetic tests
+npm run smoke:real-wallet # live MetaMask gate (13.34.1); see "Required" above
+npm version <patch|minor|major>   # bumps package.json + tags
+npm publish --access public       # scoped package → must be --access public
+git push && git push --tags
+```
+
+Consumers can also install straight from git if preferred:
 
 ```bash
 npm install git+https://github.com/AndyMarigoldLabs/web3-tester.git#<tag-or-sha>
 ```
 
-If it ever goes public, pick a license (MIT/Apache-2.0), flip `private`, and
-replace this section with `npm publish --access public`.
+The published tarball excludes `docs/`; keep the consumer-facing files
+(README, examples, `.env.example`) generic and standalone.

@@ -1,5 +1,19 @@
 # Changelog
 
+## 0.4.1 — 2026-06-11 — public release
+
+First public release on npm. No library behavior change from 0.4.0.
+
+- Licensed **MIT** (was UNLICENSED / private); published public
+  (`npm publish --access public`).
+- Slimmer published tarball: `docs/` is no longer shipped (it stays in the
+  repo); the package now ships `dist`, `examples`, `README.md`, `LICENSE`, and
+  `.env.example`.
+- The README, examples, and `.env.example` are generic and standalone (the
+  prior Fjord-v4-specific framing, URLs, and `FJORD_*` env aliases were
+  removed from the consumer-facing materials). The `FJORD_PRIVATE_KEY` /
+  `SEPOLIA_RPC_URL` env aliases remain honored in code for backward compat.
+
 ## 0.4.0 — 2026-06-11 — real-wallet 13.x hardening
 
 Speed and usability pass on the real-MetaMask adapter, validated live against

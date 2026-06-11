@@ -14,11 +14,10 @@ The injected fixtures test dApp behavior with a programmable EIP-1193 provider. 
 - Optional live-chain fixtures for controlled testnet QA with a runtime-only private key (`createLiveFixtures` for custom chains/env names).
 - Optional WalletConnect/AppKit simulation (`@marigoldlabs/web3-tester/walletconnect`): a headless WC v2 wallet peer that pairs with the dapp's QR modal and answers every request through the same wallet gating — needs the optional `@walletconnect/*` peers and a Reown project id.
 - Real MetaMask mode: pinned-version extension download (`prepareMetaMaskExtension`), one-time onboarding into a cached profile with disposable per-test clones (`buildWalletProfile`/`cloneWalletProfile`), Playwright fixtures (`@marigoldlabs/web3-tester/real-wallet-fixtures`), wallet-side network add/switch, dapp connection, signature/transaction confirmation and rejection, and token approval helpers — validated end to end by an opt-in smoke suite against the pinned MetaMask build.
-- Fjord v4 QA specs (separate `fjord` Playwright project) documenting the current state of `https://v4.fjordfoundry.com`.
 
 ## Install In A Consumer App
 
-From the Fjord v4 package, install this repo as a dev dependency:
+Install as a dev dependency:
 
 ```bash
 npm install --save-dev @marigoldlabs/web3-tester
@@ -159,7 +158,6 @@ npx playwright install chromium
 npm run typecheck
 npm run build
 npm test          # hermetic library tests (needs anvil)
-npm run test:fjord  # opt-in Fjord v4 QA suite (needs DAPP_URL access + env gates)
 npm run smoke:real-wallet  # opt-in real-MetaMask smoke suite (headed)
 ```
 
@@ -202,7 +200,7 @@ Copy `.env.example` for local reference. Do not commit real private keys.
 | `ANVIL_CHAIN_ID` | `31337` | Chain ID exposed by local Anvil and the injected provider. |
 | `ANVIL_FORK_URL` | unset | Optional fork RPC URL. |
 | `ANVIL_SILENT` | `true` | Set to `false` to stream Anvil logs. |
-| `WEB3_TESTER_PRIVATE_KEY` | unset | Runtime-only private key for live-chain fixtures (`FJORD_PRIVATE_KEY` still honored as a legacy alias). |
+| `WEB3_TESTER_PRIVATE_KEY` | unset | Runtime-only private key for live-chain fixtures. |
 | `WEB3_TESTER_RPC_URL` | Viem default | Optional RPC URL for live fixtures (`SEPOLIA_RPC_URL` legacy alias). |
 | `WEB3_TESTER_METAMASK_VERSION` | pinned default | MetaMask release downloaded by `prepareMetaMaskExtension`. |
 | `WEB3_TESTER_REAL_WALLET_EXTENSION_PATH` | auto-download | Path to an unpacked MetaMask extension (skips the download). |
@@ -212,8 +210,6 @@ Copy `.env.example` for local reference. Do not commit real private keys.
 | `WEB3_TESTER_REAL_WALLET_HEADLESS` | none — explicit choice required | `true`/`false`. Real-wallet launches refuse to guess: pick headed (fully validated) or headless (needs the full Chromium from `npx playwright install chromium`) here or via the `headless` option. |
 | `WEB3_TESTER_REAL_WALLET_SMOKE` | unset | Set `true` to run the real-MetaMask smoke suite (`npm run smoke:real-wallet`). |
 | `WEB3_TESTER_WC_PROJECT_ID` | unset | Reown project id; set to run the opt-in WalletConnect relay suite. |
-| `DAPP_URL` | `https://v4.fjordfoundry.com` | Base URL for the Fjord QA project. |
-| `FJORD_*` gates | unset | Fjord QA mutation gates — see `docs/FJORD_LIVE_QA.md`. |
 
 ## Package Surface
 
@@ -306,10 +302,8 @@ test.use({
 | --- | --- |
 | `src/` | Reusable package source. |
 | `tests/` (library project) | Hermetic harness self-tests: `anvil`, `live-fixtures`, `mock-wallet`, `private-key-rpc-client`, `provider-injection`, `real-wallet`, `real-wallet-smoke` (opt-in). |
-| `tests/fjord*.spec.ts` (fjord project) | Fjord v4 public, live, and mutation QA specs (`npm run test:fjord`). |
-| `docs/` | Dependency, API, architecture, and Fjord QA documentation. |
+| `docs/` | API, architecture, and roadmap documentation. |
 | `examples/` | Copyable consumer-app snippets. |
-| `reports/` | Fjord v4 QA reports and library review reports. |
 
 ## Safety Model
 
@@ -342,6 +336,4 @@ test.use({
 - [docs/API.md](docs/API.md)
 - [docs/ROADMAP.md](docs/ROADMAP.md)
 - [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)
-- [docs/CONSUMING_FROM_FJORD.md](docs/CONSUMING_FROM_FJORD.md)
-- [docs/FJORD_LIVE_QA.md](docs/FJORD_LIVE_QA.md)
 - [docs/RELEASE_CHECKLIST.md](docs/RELEASE_CHECKLIST.md)

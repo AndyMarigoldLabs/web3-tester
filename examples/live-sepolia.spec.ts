@@ -1,6 +1,9 @@
 import { expect, test } from '@marigoldlabs/web3-tester/live-fixtures';
 
-test.skip(!process.env.FJORD_PRIVATE_KEY, 'FJORD_PRIVATE_KEY is required for live Sepolia tests.');
+test.skip(
+  !process.env.WEB3_TESTER_PRIVATE_KEY,
+  'WEB3_TESTER_PRIVATE_KEY is required for live Sepolia tests.',
+);
 
 type EthereumProvider = {
   request: (args: { method: string; params?: unknown[] }) => Promise<unknown>;
