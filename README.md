@@ -93,6 +93,9 @@ test.use({
   realWalletOptions: {
     setup: { seedPhrase: process.env.WEB3_TESTER_REAL_WALLET_SECRET_RECOVERY_PHRASE },
     baseURL: 'https://app.example.com',
+    // Required: pick headed or headless explicitly (or set
+    // WEB3_TESTER_REAL_WALLET_HEADLESS). Headed is the fully validated mode.
+    headless: false,
   },
 });
 
@@ -125,6 +128,7 @@ const wallet = await launchRealWallet({
   extensionPath: await prepareMetaMaskExtension(),
   profileDir: process.env.WEB3_TESTER_REAL_WALLET_PROFILE_DIR as string,
   setup: { seedPhrase: process.env.WEB3_TESTER_REAL_WALLET_SECRET_RECOVERY_PHRASE },
+  headless: false,
 });
 
 await wallet.connectToDapp();
@@ -135,12 +139,17 @@ await wallet.close();
 
 MetaMask version pinning: selectors are maintained against
 `DEFAULT_METAMASK_VERSION` (currently 13.34.1, current MetaMask) and validated
-by the opt-in smoke suite (`WEB3_TESTER_REAL_WALLET_SMOKE=true npm test`),
-which runs the full journey — onboarding, add/switch network, connect, sign,
-send, reject — against the real extension. The adapter spans both the 13.x
-"multichain" UI and the older 12.x UI; set `WEB3_TESTER_METAMASK_VERSION` to
-pin a specific build (e.g. `12.23.1`). Bump the pin deliberately and re-run
-the smoke suite, since MetaMask UI selectors can drift between releases.
+by the opt-in smoke suite (`npm run smoke:real-wallet`), which runs the full
+journey — onboarding, add/switch network, connect, sign, send, reject — plus
+the account/token/settings surface against the real extension. The UI
+generation (13.x "multichain" vs the older 12.x) is an explicit configuration,
+derived from the extension manifest at launch and overridable via the
+`generation` option: only the configured generation's selectors are driven —
+the other generation is never probed as a fallback. Set
+`WEB3_TESTER_METAMASK_VERSION` to pin a specific build (e.g. `12.23.1`; 12.x
+is supported on a best-effort validation cadence — 13.x gates releases). Bump
+the pin deliberately and re-run the smoke suite, since MetaMask UI selectors
+can drift between releases.
 
 ## Local Development
 
@@ -151,7 +160,7 @@ npm run typecheck
 npm run build
 npm test          # hermetic library tests (needs anvil)
 npm run test:fjord  # opt-in Fjord v4 QA suite (needs DAPP_URL access + env gates)
-WEB3_TESTER_REAL_WALLET_SMOKE=true npm test  # opt-in real-MetaMask smoke suite
+npm run smoke:real-wallet  # opt-in real-MetaMask smoke suite (headed)
 ```
 
 Foundry's `anvil` executable must be available on `PATH`, or set `ANVIL_EXECUTABLE`.
@@ -200,7 +209,8 @@ Copy `.env.example` for local reference. Do not commit real private keys.
 | `WEB3_TESTER_REAL_WALLET_PROFILE_DIR` | profile cache | Explicit persistent Chromium user-data directory, or a Chrome profile directory such as `Profile 1`. Disables the per-test profile cache. |
 | `WEB3_TESTER_REAL_WALLET_PASSWORD` | deterministic test password | MetaMask password used to unlock profiles. |
 | `WEB3_TESTER_REAL_WALLET_SECRET_RECOVERY_PHRASE` | unset | Seed phrase used to build the cached real-wallet profile. |
-| `WEB3_TESTER_REAL_WALLET_SMOKE` | unset | Set `true` to run the real-MetaMask smoke suite. |
+| `WEB3_TESTER_REAL_WALLET_HEADLESS` | none — explicit choice required | `true`/`false`. Real-wallet launches refuse to guess: pick headed (fully validated) or headless (needs the full Chromium from `npx playwright install chromium`) here or via the `headless` option. |
+| `WEB3_TESTER_REAL_WALLET_SMOKE` | unset | Set `true` to run the real-MetaMask smoke suite (`npm run smoke:real-wallet`). |
 | `WEB3_TESTER_WC_PROJECT_ID` | unset | Reown project id; set to run the opt-in WalletConnect relay suite. |
 | `DAPP_URL` | `https://v4.fjordfoundry.com` | Base URL for the Fjord QA project. |
 | `FJORD_*` gates | unset | Fjord QA mutation gates — see `docs/FJORD_LIVE_QA.md`. |

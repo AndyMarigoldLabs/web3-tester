@@ -1,6 +1,6 @@
 {
   "name": "@marigoldlabs/web3-tester",
-  "version": "0.3.0",
+  "version": "0.4.0",
   "private": true,
   "type": "module",
   "description": "A Playwright, Anvil, and Viem based Web3 E2E harness with an injected programmable wallet provider.",
@@ -88,6 +88,7 @@
     "test": "playwright test --project=library",
     "test:fjord": "playwright test --project=fjord",
     "test:all": "playwright test",
+    "smoke:real-wallet": "node scripts/real-wallet-smoke.mjs",
     "typecheck": "tsc --noEmit",
     "verify": "npm run typecheck && npm run build && npm test"
   },

@@ -1,12 +1,23 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { chromium, type BrowserContext, type Locator, type Page } from '@playwright/test';
+import { extensionManifestVersion } from './metamask-extension.js';
 import { passwordForSetup } from './real-wallet-setup.js';
 
 export type RealWalletProfile = {
   profileDirectory?: string;
   userDataDir: string;
 };
+
+/**
+ * MetaMask UI generation the selector surface drives. '13x' is the
+ * multichain UI (validated against 13.34.1, the pinned default); '12x' is
+ * the classic UI (last validated against 12.23.1). Both are first-class
+ * configuration: the generation is derived from the extension manifest at
+ * launch and selects which generation's selectors run — the other
+ * generation's selectors are not probed as fallbacks.
+ */
+export type WalletGeneration = '12x' | '13x';
 
 export type RealWalletSetup = {
   password?: string;
@@ -29,6 +40,20 @@ export type RealWalletLaunchOptions = {
   expectedAddress?: string;
   extensionName?: string;
   extensionPath: string;
+  /**
+   * UI generation to drive. Defaults to the major version in the extension's
+   * manifest (>= 13 → '13x'). Set explicitly for custom builds whose
+   * manifest version does not reflect their UI generation.
+   */
+  generation?: WalletGeneration;
+  /**
+   * Run the browser headless. There is deliberately no default — choose
+   * explicitly here or via WEB3_TESTER_REAL_WALLET_HEADLESS=true|false.
+   * Headed is the fully validated mode; headless loads the extension through
+   * the full Chromium build (channel 'chromium') and is validated for
+   * extension load + clipboard, but the full confirmation journey is not
+   * proven headless yet.
+   */
   headless?: boolean;
   profileDir: string;
   setup?: RealWalletSetup;
@@ -120,8 +145,79 @@ const DEFAULT_EXTENSION_NAME = 'MetaMask';
 const DEFAULT_TIMEOUT_MS = 30_000;
 const SHORT_TIMEOUT_MS = 2_000;
 const LOCATOR_PROBE_MS = 250;
+// 13.x derives many accounts from a heavily-used SRP; the account-tree
+// backup-and-sync races createNextMultichainAccountGroup and silently drops
+// ~1/3 of add clicks until it settles. Dwell before the first create.
+const ACCOUNT_TREE_SETTLE_MS = 12_000;
 const FULL_ADDRESS_PATTERN = /^0x[0-9a-fA-F]{40}$/;
 const testId = (id: string) => `[data-testid="${id}"]`;
+
+/**
+ * A selector-stack entry optionally scoped to one UI generation. Bare
+ * locators apply to both generations; tagged entries are dropped — not
+ * probed — when the wallet is configured for the other generation, so a
+ * wrong-generation selector can never burn its probe budget.
+ */
+type GenLocator = Locator | { gen: WalletGeneration; loc: Locator };
+
+/**
+ * @internal Resolves a generation-annotated selector stack against the
+ * configured generation: tagged entries of the other generation are dropped,
+ * bare entries pass through, and relative order is preserved.
+ */
+export function resolveGenLocators(
+  locators: readonly GenLocator[],
+  generation: WalletGeneration,
+): Locator[] {
+  const resolved: Locator[] = [];
+  for (const entry of locators) {
+    if ('gen' in entry) {
+      if (entry.gen === generation) resolved.push(entry.loc);
+    } else {
+      resolved.push(entry);
+    }
+  }
+  return resolved;
+}
+
+/** @internal Maps an extension manifest version to the UI generation it ships. */
+export function walletGenerationForVersion(version: string): WalletGeneration {
+  const major = Number.parseInt(version, 10);
+  return Number.isNaN(major) || major >= 13 ? '13x' : '12x';
+}
+
+function detectWalletGeneration(extensionPath: string): WalletGeneration {
+  try {
+    return walletGenerationForVersion(extensionManifestVersion(extensionPath));
+  } catch {
+    // No readable manifest version: assume the pinned default generation.
+    return '13x';
+  }
+}
+
+/**
+ * @internal Resolves the headed/headless choice. There is deliberately no
+ * default: the two modes have different validation status (headed is fully
+ * validated end to end; headless is validated for extension load and the
+ * clipboard round-trip only), so every run must pick one explicitly.
+ */
+export function resolveRealWalletHeadless(explicit?: boolean): boolean {
+  if (explicit !== undefined) return explicit;
+
+  const env = process.env.WEB3_TESTER_REAL_WALLET_HEADLESS;
+  if (env === 'true') return true;
+  if (env === 'false') return false;
+  if (env) {
+    throw new Error(`WEB3_TESTER_REAL_WALLET_HEADLESS must be "true" or "false", got "${env}".`);
+  }
+
+  throw new Error(
+    'Real-wallet launches need an explicit headed/headless choice: pass headless: true|false ' +
+      '(launchRealWallet / buildWalletProfile / realWalletOptions) or set ' +
+      'WEB3_TESTER_REAL_WALLET_HEADLESS=true|false. Headed is the fully validated mode; ' +
+      'headless needs the full Chromium build (npx playwright install chromium).',
+  );
+}
 
 function extensionUrl(extensionId: string, page = 'home.html') {
   return `chrome-extension://${extensionId}/${page}`;
@@ -840,12 +936,14 @@ async function finishMetaMaskOnboarding(page: Page, password: string) {
     throw new Error('MetaMask wallet import did not complete onboarding.');
   }
 
-  // MetaMask 13.x persists state to IndexedDB asynchronously with a debounced
-  // write. The vault and completedOnboarding flag only reach disk once the
-  // wallet has sat on a working home screen for a moment — closing/relaunching
-  // the profile before then silently replays onboarding. Dwell to let the
-  // write flush before the caller tears the context down.
-  await page.waitForTimeout(3_000);
+  // MetaMask 13.x persists extension state through a debounced write
+  // (app/scripts/lib/safe-reload.ts OperationSafener — a lodash
+  // trailing-edge debounce, wait 1000ms, no maxWait — wrapping
+  // persistenceManager.set()). Give the UI a short beat to enqueue the
+  // post-onboarding write; the real flush guarantee lives in
+  // buildWalletProfile, which polls the profile's storage until the write
+  // lands and goes quiet before closing.
+  await page.waitForTimeout(500);
 }
 
 class MetaMaskRealWallet implements RealWalletController {
@@ -857,7 +955,21 @@ class MetaMaskRealWallet implements RealWalletController {
     // invalidate it, or getAccountAddress's fast-path returns stale results.
     private expectedAddress?: string,
     private readonly walletPassword?: string,
+    private readonly generation: WalletGeneration = '13x',
   ) {}
+
+  // Generation-aware variant of clickFirstVisible: the annotated stack is
+  // resolved against the configured generation first, and an empty resolution
+  // short-circuits without probing the page at all.
+  private async clickFirst(
+    locators: readonly GenLocator[],
+    timeout?: number,
+    options?: { force?: boolean; requireEnabled?: boolean },
+  ) {
+    const resolved = resolveGenLocators(locators, this.generation);
+    if (!resolved.length) return undefined;
+    return clickFirstVisible(resolved, timeout, options);
+  }
 
   async approveTokenPermission(options?: {
     gasSetting?: RealWalletGasSettings;
@@ -989,12 +1101,13 @@ class MetaMaskRealWallet implements RealWalletController {
       return this.expectedAddress;
     }
 
-    // Some MetaMask builds (12.x) expose a header copy button that puts the
-    // full address on the clipboard; reading it via a synthetic paste avoids
-    // the account-details modal entirely (extension pages block evaluate via
-    // LavaMoat, normal pages do not).
-    const headerCopied = await clickFirstVisible(
-      [page.locator(testId('app-header-copy-button'))],
+    // 12.x exposes a header copy button (an extension copy control that uses
+    // document.execCommand('copy')) that puts the full address on the
+    // clipboard; reading it via a synthetic paste avoids the account-details
+    // modal entirely (extension pages block evaluate via LavaMoat, normal
+    // pages do not). 13.x has no header copy control — the tag skips it.
+    const headerCopied = await this.clickFirst(
+      [{ gen: '12x', loc: page.locator(testId('app-header-copy-button')) }],
       SHORT_TIMEOUT_MS,
     );
     if (headerCopied) {
@@ -1037,18 +1150,21 @@ class MetaMaskRealWallet implements RealWalletController {
     throw new Error('Unable to read the selected MetaMask account address from the UI.');
   }
 
-  // Opens the account address view across MetaMask UI generations. 12.x:
-  // account-options (3-dot) menu -> "Account details". 13.x multichain UI:
-  // account picker -> the selected account row's address menu -> "Addresses"
-  // (the "Account details" item there is the export-keys view, not the
-  // address).
+  // Opens the account address view. 12.x: account-options (3-dot) menu ->
+  // "Account details". 13.x multichain UI: account picker -> the selected
+  // account row's address menu -> "Addresses" (the "Account details" item
+  // there is the export-keys view, not the address).
   private async openAccountDetailsModal(page: Page) {
-    // 12.x path.
-    if (await clickFirstVisible([page.locator(testId('account-options-menu-button'))], SHORT_TIMEOUT_MS)) {
-      if (await clickFirstVisible([page.locator(testId('account-list-menu-details'))], SHORT_TIMEOUT_MS)) {
-        return;
-      }
-      await page.keyboard.press('Escape').catch(() => undefined);
+    if (this.generation === '12x') {
+      const menuOpened = await clickFirstVisible(
+        [page.locator(testId('account-options-menu-button'))],
+        SHORT_TIMEOUT_MS,
+      );
+      const detailsOpened =
+        menuOpened &&
+        (await clickFirstVisible([page.locator(testId('account-list-menu-details'))], DEFAULT_TIMEOUT_MS));
+      if (!detailsOpened) throw new Error('Unable to open the MetaMask account details view.');
+      return;
     }
 
     // 13.x multichain path. Prefer the home header's active-account address
@@ -1093,7 +1209,6 @@ class MetaMaskRealWallet implements RealWalletController {
         page.getByRole('menuitem', { name: /^Addresses$/i }),
         page.getByText('Addresses', { exact: true }),
         page.locator(testId('multichain-account-menu-item-accountDetails')),
-        page.locator(testId('account-list-menu-details')),
       ],
       DEFAULT_TIMEOUT_MS,
     );
@@ -1130,10 +1245,11 @@ class MetaMaskRealWallet implements RealWalletController {
     // 13.x splits the picker into "Default"/popular and "Custom" tabs; the
     // custom RPC form lives behind the Custom tab. (The bare "Add network"
     // buttons on the default tab add preconfigured popular networks, not a
-    // custom RPC.) Selecting the tab is a no-op on 12.x. The modal animates
-    // in, so give the click room to stabilize.
-    await wait(300);
-    await clickFirstVisible([page.getByRole('tab', { name: /^Custom$/i })], 8_000);
+    // custom RPC.) Playwright's actionability checks wait out the modal
+    // slide-in; 12.x has no Custom tab.
+    if (this.generation === '13x') {
+      await clickFirstVisible([page.getByRole('tab', { name: /^Custom$/i })], 8_000);
+    }
 
     const addStarted = await clickFirstVisible(
       [
@@ -1255,11 +1371,13 @@ class MetaMaskRealWallet implements RealWalletController {
     ];
 
     // Custom RPC networks live under the 13.x "Custom" tab; try the current
-    // (default) tab first, then the Custom tab. Selecting the tab is a no-op
-    // on 12.x.
+    // (default) tab first, then the Custom tab. 12.x has no Custom tab, so
+    // its retry just re-probes the rows with the full budget.
     let selected = await clickFirstVisible(candidates(), SHORT_TIMEOUT_MS);
     if (!selected) {
-      await clickFirstVisible([page.getByRole('tab', { name: /^Custom$/i })], SHORT_TIMEOUT_MS);
+      if (this.generation === '13x') {
+        await clickFirstVisible([page.getByRole('tab', { name: /^Custom$/i })], SHORT_TIMEOUT_MS);
+      }
       selected = await clickFirstVisible(candidates(), DEFAULT_TIMEOUT_MS);
     }
     if (!selected) {
@@ -1335,38 +1453,47 @@ class MetaMaskRealWallet implements RealWalletController {
     const page = await this.preparedHome();
     await this.openAccountPicker(page);
 
-    // 12.x: action button → "Import account". 13.x: add wallet → import.
     let importOpened = false;
-    if (
-      await clickFirstVisible(
-        [page.locator(testId('multichain-account-menu-popover-action-button'))],
-        SHORT_TIMEOUT_MS,
-      )
-    ) {
-      importOpened = Boolean(
+    if (this.generation === '12x') {
+      // 12.x: action button → "Import account".
+      if (
         await clickFirstVisible(
-          [page.locator(testId('multichain-account-menu-popover-add-imported-account'))],
+          [page.locator(testId('multichain-account-menu-popover-action-button'))],
           SHORT_TIMEOUT_MS,
-        ),
-      );
-    }
-    if (!importOpened) {
-      // 13.x: the add-wallet button sits below the (possibly long) account
-      // list, so scroll it into view first. The wallet-type item id is
-      // "private-key".
-      const addWallet = page.locator(testId('account-list-add-wallet-button')).first();
-      await addWallet.scrollIntoViewIfNeeded({ timeout: SHORT_TIMEOUT_MS }).catch(() => undefined);
-      if (await clickFirstVisible([addWallet], DEFAULT_TIMEOUT_MS)) {
+        )
+      ) {
         importOpened = Boolean(
           await clickFirstVisible(
-            [
-              page.locator(testId('choose-wallet-type-private-key')),
-              page.locator(testId('wallet-type-private-key')),
-              page.getByText(/^(Private key|Import account)$/i),
-            ],
-            DEFAULT_TIMEOUT_MS,
+            [page.locator(testId('multichain-account-menu-popover-add-imported-account'))],
+            SHORT_TIMEOUT_MS,
           ),
         );
+      }
+    } else {
+      // 13.x: the add-wallet button sits below the (possibly long) account
+      // list, so scroll it into view first, then pick "Import an account"
+      // (runtime testid choose-wallet-type-import-account). The import page
+      // defaults to the Private key tab, so no further wallet-type choice is
+      // needed. Retry the picker → add-wallet → choose-type hop (it can race
+      // the account-list render under load).
+      for (let attempt = 0; attempt < 3 && !importOpened; attempt += 1) {
+        if (attempt > 0) {
+          await page.keyboard.press('Escape').catch(() => undefined);
+          await this.openAccountPicker(page);
+        }
+        const addWallet = page.locator(testId('account-list-add-wallet-button')).first();
+        await addWallet.scrollIntoViewIfNeeded({ timeout: SHORT_TIMEOUT_MS }).catch(() => undefined);
+        if (await clickFirstVisible([addWallet], DEFAULT_TIMEOUT_MS)) {
+          importOpened = Boolean(
+            await clickFirstVisible(
+              [
+                page.locator(testId('choose-wallet-type-import-account')),
+                page.getByText('Import an account', { exact: true }),
+              ],
+              DEFAULT_TIMEOUT_MS,
+            ),
+          );
+        }
       }
     }
     if (!importOpened) {
@@ -1397,77 +1524,177 @@ class MetaMaskRealWallet implements RealWalletController {
       throw new Error(`MetaMask rejected the private key import${helpText ? `: ${helpText}` : '.'}`);
     }
 
-    // The imported account becomes active.
+    // The imported account becomes active. 13.x leaves the SPA parked on
+    // #/choose-new-wallet-type, so route back to the wallet home or later
+    // home-screen lookups (account-menu-icon, etc.) time out.
+    if (this.generation === '13x') {
+      await page.goto(`${page.url().split('#')[0]}#/`).catch(() => undefined);
+      await waitForMetaMaskReady(page);
+    }
     this.expectedAddress = undefined;
     await closeMetaMaskOverlay(page);
   }
 
   async addNewAccount(name?: string) {
     const page = await this.preparedHome();
-    await this.openAccountPicker(page);
 
-    // 12.x path: action button → Add account → optional name → submit.
-    if (
-      await clickFirstVisible(
+    if (this.generation === '12x') {
+      await this.openAccountPicker(page);
+      // 12.x: action button → Add account → optional name → submit.
+      const actionOpened = await clickFirstVisible(
         [page.locator(testId('multichain-account-menu-popover-action-button'))],
         SHORT_TIMEOUT_MS,
-      )
-    ) {
-      if (
-        await clickFirstVisible(
+      );
+      const addOpened =
+        actionOpened &&
+        (await clickFirstVisible(
           [page.locator(testId('multichain-account-menu-popover-add-account'))],
           SHORT_TIMEOUT_MS,
-        )
-      ) {
-        if (name) {
-          await fillFirstVisible(
-            [page.locator('#account-name'), page.locator(testId('account-name-input'))],
-            name,
-            SHORT_TIMEOUT_MS,
-          );
-        }
-        const submitted = await clickFirstVisible(
-          [
-            page.locator(testId('submit-add-account-with-name')),
-            page.getByRole('button', { name: /^(Add account|Create)$/i }),
-          ],
-          DEFAULT_TIMEOUT_MS,
+        ));
+      if (!addOpened) {
+        throw new Error(
+          'Unable to find the MetaMask add-account control — update web3-tester for this MetaMask version.',
         );
-        if (!submitted) throw new Error('Unable to submit the MetaMask add-account dialog.');
-        this.expectedAddress = undefined;
-        await closeMetaMaskOverlay(page);
-        return;
       }
-      await page.keyboard.press('Escape').catch(() => undefined);
+      if (name) {
+        await fillFirstVisible(
+          [page.locator('#account-name'), page.locator(testId('account-name-input'))],
+          name,
+          SHORT_TIMEOUT_MS,
+        );
+      }
+      const submitted = await clickFirstVisible(
+        [
+          page.locator(testId('submit-add-account-with-name')),
+          page.getByRole('button', { name: /^(Add account|Create)$/i }),
+        ],
+        DEFAULT_TIMEOUT_MS,
+      );
+      if (!submitted) throw new Error('Unable to submit the MetaMask add-account dialog.');
+      this.expectedAddress = undefined;
+      await closeMetaMaskOverlay(page);
+      return;
     }
 
-    // 13.x multichain tree: a single add button on the first SRP wallet.
-    const added = await clickFirstVisible(
-      [page.locator(testId('add-multichain-account-button')).first()],
-      DEFAULT_TIMEOUT_MS,
-    );
-    if (!added) {
+    // 13.x multichain: the "add account" control is NOT in the account picker
+    // (its only add affordance, account-list-add-wallet-button, opens the
+    // import/hardware "Add a wallet" flow). Adding a derived account lives on
+    // the SRP wallet's details page. The create is a background dispatch that
+    // the account-tree sync silently drops ~1/3 of the time (no toast, the new
+    // account is not auto-selected), so the reliable approach is: settle the
+    // tree, gate on a non-syncing button, click, then wait for the specific
+    // new cell (the wallet's max index + 1) to attach — retrying across fresh
+    // navigations. LavaMoat blocks bulk text reads, so everything is
+    // count()/getAttribute()/testid based.
+    const home = page.url().split('#')[0];
+    await this.openAccountPicker(page);
+    const walletId = await this.activeSrpWalletId(page);
+    await page.keyboard.press('Escape').catch(() => undefined);
+
+    await wait(ACCOUNT_TREE_SETTLE_MS);
+
+    const walletCellPrefix = `[data-testid^="multichain-account-cell-${walletId}/"]`;
+    const createAttempts = 8;
+    let newIndex = -1;
+    for (let attempt = 0; attempt < createAttempts && newIndex < 0; attempt += 1) {
+      // Between attempts, let the account-tree backup-and-sync (which drops
+      // the create when it overlaps, and retries on its own backoff) calm
+      // before re-navigating — back off a little further each time.
+      if (attempt > 0) await wait(2_000 + attempt * 1_500);
+
+      await page.goto(`${home}#/multichain-wallet-details-page?id=${encodeURIComponent(walletId)}`);
+      await waitForMetaMaskReady(page);
+
+      const addButton = page.locator(testId('add-multichain-account-button')).first();
+      if (!(await addButton.waitFor({ state: 'visible', timeout: DEFAULT_TIMEOUT_MS }).then(() => true).catch(() => false))) {
+        throw new Error(
+          'Unable to find the MetaMask add-account control on the wallet details page — update web3-tester for this MetaMask version.',
+        );
+      }
+      await this.waitForAddAccountReady(addButton);
+
+      // The wallet's cells are index-ordered and contiguous; the new account
+      // is one past the current maximum. Read the last cell's id with a single
+      // call (enumerating all cells perturbs timing and flakes detection).
+      const lastTestId = await page.locator(walletCellPrefix).last().getAttribute('data-testid').catch(() => null);
+      const maxIndex = Number.parseInt(lastTestId?.split('/').pop() ?? '', 10);
+      if (Number.isNaN(maxIndex)) {
+        throw new Error('Unable to read the MetaMask wallet account indices to add an account.');
+      }
+      const candidate = maxIndex + 1;
+
+      await addButton.click();
+      const created = await page
+        .locator(testId(`multichain-account-cell-${walletId}/${candidate}`))
+        .waitFor({ state: 'attached', timeout: 15_000 })
+        .then(() => true)
+        .catch(() => false);
+      if (created) newIndex = candidate;
+    }
+    if (newIndex < 0) {
       throw new Error(
-        'Unable to find the MetaMask add-account control — update web3-tester for this MetaMask version.',
+        `MetaMask did not create a new account after ${createAttempts} attempts (account-tree sync ` +
+          'race) — retry the operation.',
       );
     }
-    await isHidden(page.getByText(/Adding account/i), DEFAULT_TIMEOUT_MS).catch(() => undefined);
-    await waitForMetaMaskReady(page);
     this.expectedAddress = undefined;
 
     if (name) {
-      // Rename the freshly created (last) account row while the picker is up.
-      const row = accountRowLocator(page).last();
-      await this.renameAccountRow(page, row, name);
+      // Rename via the account-details route: the new high-index cell's row
+      // menu is unclickable at the foot of a long (un-virtualized) wallet list.
+      await page.goto(
+        `${home}#/multichain-account-details?accountGroupId=${encodeURIComponent(`${walletId}/${newIndex}`)}`,
+      );
+      await waitForMetaMaskReady(page);
+      const editOpened = await clickFirstVisible(
+        [page.locator(testId('account-name-action'))],
+        DEFAULT_TIMEOUT_MS,
+      );
+      if (!editOpened) throw new Error('Unable to open the MetaMask account name editor.');
+      await this.fillAccountNameAndSave(page, name);
     }
 
-    await page.keyboard.press('Escape').catch(() => undefined);
+    await page.goto(home);
+    await waitForMetaMaskReady(page);
     await closeMetaMaskOverlay(page);
+  }
+
+  // The SRP (entropy) wallet id, parsed from the first multichain account
+  // cell's test id (form: multichain-account-cell-<entropy:UID>/<index>).
+  // Needed to address the wallet details page where account creation lives.
+  private async activeSrpWalletId(page: Page): Promise<string> {
+    const testIdAttr = await page
+      .locator('[data-testid^="multichain-account-cell-entropy:"]')
+      .first()
+      .getAttribute('data-testid')
+      .catch(() => null);
+    const match = testIdAttr?.match(/^multichain-account-cell-(entropy:[^/]+)/);
+    if (!match) {
+      throw new Error(
+        'Unable to determine the MetaMask SRP wallet id from the account list — update web3-tester for this MetaMask version.',
+      );
+    }
+    return match[1];
   }
 
   async switchAccount(nameOrAddress: string) {
     const page = await this.preparedHome();
     await this.openAccountPicker(page);
+
+    if (this.generation === '13x') {
+      const cell = await this.find13xAccountCell(page, nameOrAddress);
+      if (!cell) {
+        throw new Error(
+          `Unable to find MetaMask account "${nameOrAddress}" in the picker (searched the ` +
+            'virtualized account list by name/address).',
+        );
+      }
+      await cell.click();
+      await waitForMetaMaskReady(page);
+      this.expectedAddress = FULL_ADDRESS_PATTERN.test(nameOrAddress) ? nameOrAddress : undefined;
+      await closeMetaMaskOverlay(page);
+      return;
+    }
 
     const row = accountRowLocator(page).filter({ hasText: accountRowMatcher(nameOrAddress) }).first();
     const clicked = await clickFirstVisible([row], DEFAULT_TIMEOUT_MS, { requireEnabled: false });
@@ -1486,6 +1713,15 @@ class MetaMaskRealWallet implements RealWalletController {
   async renameAccount(currentName: string, newName: string) {
     const page = await this.preparedHome();
     await this.openAccountPicker(page);
+
+    if (this.generation === '13x') {
+      const cell = await this.findAccountCellByName(page, currentName);
+      if (!cell) throw new Error(`Unable to find MetaMask account "${currentName}" to rename.`);
+      await this.rename13xCellViaMenu(page, cell, newName);
+      await page.keyboard.press('Escape').catch(() => undefined);
+      await closeMetaMaskOverlay(page);
+      return;
+    }
 
     const row = accountRowLocator(page).filter({ hasText: accountRowMatcher(currentName) }).first();
     if (!(await isVisible(row, DEFAULT_TIMEOUT_MS).catch(() => false))) {
@@ -1532,32 +1768,12 @@ class MetaMaskRealWallet implements RealWalletController {
     if (!settingsOpened) throw new Error('Unable to open MetaMask settings.');
     await waitForMetaMaskReady(page);
 
-    // 12.x: Advanced tab → "Clear activity tab data".
-    if (
-      await clickFirstVisible(
-        [page.locator(testId('advanced-setting-reset-account')).getByRole('button')],
-        SHORT_TIMEOUT_MS,
-      )
-    ) {
-      await this.confirmResetModal(page);
-      await this.leaveSettings(page);
-      return;
-    }
-    if (
-      await clickFirstVisible(
-        [
-          page.getByRole('tab', { name: /^Advanced$/i }),
-          page.locator('.tab-bar__tab').filter({ hasText: /^Advanced$/ }),
-        ],
-        SHORT_TIMEOUT_MS,
-      )
-    ) {
+    if (this.generation === '12x') {
+      // 12.x: "Clear activity tab data" lives on the Advanced tab (or is
+      // already visible when settings opens straight onto it).
       if (
         await clickFirstVisible(
-          [
-            page.locator(testId('advanced-setting-reset-account')).getByRole('button'),
-            page.getByRole('button', { name: /Clear activity( tab)? data/i }),
-          ],
+          [page.locator(testId('advanced-setting-reset-account')).getByRole('button')],
           SHORT_TIMEOUT_MS,
         )
       ) {
@@ -1565,10 +1781,31 @@ class MetaMaskRealWallet implements RealWalletController {
         await this.leaveSettings(page);
         return;
       }
-    }
-
-    // 13.x: Developer tools tab → "Delete activity and nonce data".
-    if (
+      if (
+        await clickFirstVisible(
+          [
+            page.getByRole('tab', { name: /^Advanced$/i }),
+            page.locator('.tab-bar__tab').filter({ hasText: /^Advanced$/ }),
+          ],
+          SHORT_TIMEOUT_MS,
+        )
+      ) {
+        if (
+          await clickFirstVisible(
+            [
+              page.locator(testId('advanced-setting-reset-account')).getByRole('button'),
+              page.getByRole('button', { name: /Clear activity( tab)? data/i }),
+            ],
+            SHORT_TIMEOUT_MS,
+          )
+        ) {
+          await this.confirmResetModal(page);
+          await this.leaveSettings(page);
+          return;
+        }
+      }
+    } else if (
+      // 13.x: Developer tools tab → "Delete activity and nonce data".
       await clickFirstVisible(
         [
           page.locator(testId('settings-tab-item-developer-tools')),
@@ -1633,24 +1870,67 @@ class MetaMaskRealWallet implements RealWalletController {
   async toggleShowTestNetworks(on?: boolean) {
     const page = await this.preparedHome();
 
+    if (this.generation === '13x') {
+      // 13.x hosts the toggle on the standalone #/networks page (the network
+      // picker popover only renders it once non-default testnets already
+      // exist). It is a hidden <input type=checkbox> under a styled overlay.
+      // react-toggle-button binds its `value` attribute (not the `checked`
+      // property), so Playwright's check()/uncheck() — which assert the
+      // never-updated `checked` — throw "did not change its state"; instead
+      // force-click and confirm the `value` attribute flipped.
+      const home = page.url().split('#')[0];
+      const toggle = page.locator(testId('networks-page-show-test-networks')).first();
+      // The first navigation to #/networks can race the React render; renavigate
+      // until the toggle attaches.
+      let toggleReady = false;
+      for (let attempt = 0; attempt < 3 && !toggleReady; attempt += 1) {
+        await page.goto(`${home}#/networks`);
+        // Reaching #/networks as a hash-only change from the home route leaves
+        // the toggle rendered but non-interactive (its click never fires);
+        // force a full document load so its handlers bind.
+        await page.reload().catch(() => undefined);
+        await waitForMetaMaskReady(page);
+        toggleReady = await toggle
+          .waitFor({ state: 'attached', timeout: 10_000 })
+          .then(() => true)
+          .catch(() => false);
+      }
+      if (!toggleReady) {
+        throw new Error('Unable to find the MetaMask "Show test networks" toggle on the networks page.');
+      }
+
+      // The testid sits on a hidden 1×1 screen-reader <input> bound by `value`
+      // (not `checked`); force-clicking that tiny input is unreliable. Click the
+      // wrapping label.toggle-button instead — the visible, hit-testable control
+      // — and confirm the input's `value` attribute flipped (give the
+      // controlled re-render a beat so a re-click can't flip it back).
+      const toggleLabel = toggle.locator('xpath=ancestor-or-self::label[contains(@class,"toggle-button")][1]');
+      const readOn = async () => (await toggle.getAttribute('value').catch(() => null)) === 'true';
+      const target = on ?? !(await readOn());
+      for (let attempt = 0; attempt < 5 && (await readOn()) !== target; attempt += 1) {
+        await toggleLabel.click({ force: true }).catch(() => undefined);
+        await wait(1_000);
+      }
+      if ((await readOn()) !== target) {
+        throw new Error('Unable to flip the MetaMask "Show test networks" toggle on the networks page.');
+      }
+
+      await waitForMetaMaskReady(page);
+      await page.goto(home);
+      await waitForMetaMaskReady(page);
+      await closeMetaMaskOverlay(page);
+      return;
+    }
+
     const pickerOpened = await clickFirstVisible(metaMaskNetworkPickerLocators(page), DEFAULT_TIMEOUT_MS);
     if (!pickerOpened) throw new Error('Unable to open the MetaMask network picker.');
     await waitForMetaMaskReady(page);
 
-    // The 13.x network manager splits into Popular/Custom tabs and renders
-    // the test-networks section (and its toggle) under Custom. No-op on
-    // 12.x. The modal animates in, so give the click room to stabilize.
-    await wait(300);
-    await clickFirstVisible(
-      [page.getByRole('tab', { name: /^Custom$/i }), page.getByText('Custom', { exact: true })],
-      8_000,
-    );
-
+    // react-toggle-button renders the data-testid onto a 1×1 screen-reader
+    // <input>; clicking that fails Playwright's hit-target check. Click the
+    // wrapping label.toggle-button (the hit-testable track) instead.
     const toggle = await findVisibleLocator(
       [
-        // 13.x carries a testid.
-        page.locator(testId('networks-page-show-test-networks')),
-        // 12.x renders text next to a ToggleButton with no testid.
         page
           .getByText(/Show test networks/i)
           .locator('xpath=following::label[contains(@class,"toggle-button")][1]'),
@@ -1660,11 +1940,7 @@ class MetaMaskRealWallet implements RealWalletController {
       { requireEnabled: false },
     );
     if (!toggle) {
-      throw new Error(
-        'Unable to find the MetaMask "Show test networks" toggle. MetaMask 13.x renders it only ' +
-          'when a test-chain network is configured (e.g. addNetwork() with chainId 11155111) — ' +
-          'fresh profiles ship none.',
-      );
+      throw new Error('Unable to find the MetaMask "Show test networks" toggle.');
     }
 
     if (on === undefined) {
@@ -1702,6 +1978,113 @@ class MetaMaskRealWallet implements RealWalletController {
     );
     if (!menuOpened) throw new Error('Unable to open the MetaMask token list menu.');
 
+    if (this.generation === '13x') {
+      await this.importTokenViaTokenManagement(page, token);
+    } else {
+      await this.importTokenViaModal(page, token);
+    }
+    await closeMetaMaskOverlay(page);
+  }
+
+  // 13.x: control-bar menu → "Manage tokens" → token-management page → "Add a
+  // custom token" → the custom-token-import page (address, then auto-loaded
+  // symbol/decimals, then "Add token"). Replaces the 12.x import-tokens modal.
+  private async importTokenViaTokenManagement(page: Page, token: RealWalletToken) {
+    const manageOpened = await clickFirstVisible(
+      [page.locator(testId('manageTokens')), page.getByRole('button', { name: /^Manage tokens$/i })],
+      DEFAULT_TIMEOUT_MS,
+    );
+    if (!manageOpened) throw new Error('Unable to open the MetaMask "Manage tokens" page.');
+
+    const addCustomOpened = await clickFirstVisible(
+      [
+        page.locator(testId('token-management-add-custom-token-button')),
+        page.getByRole('button', { name: /Add a custom token/i }),
+      ],
+      DEFAULT_TIMEOUT_MS,
+    );
+    if (!addCustomOpened) throw new Error('Unable to open the MetaMask custom-token import form.');
+
+    if (token.networkName) {
+      const selectorOpened = await clickFirstVisible(
+        [page.locator(testId('network-selector')), page.getByRole('button', { name: /^Network$/i })],
+        SHORT_TIMEOUT_MS,
+      );
+      if (selectorOpened) {
+        const picked = await clickFirstVisible(
+          [page.getByText(token.networkName, { exact: true })],
+          DEFAULT_TIMEOUT_MS,
+        );
+        if (!picked) {
+          throw new Error(`Unable to select network "${token.networkName}" in the token import page.`);
+        }
+      }
+    }
+
+    const addressFilled = await fillFirstVisible(
+      [page.locator(testId('custom-token-import-address-input'))],
+      token.address,
+    );
+    if (!addressFilled) throw new Error('Unable to fill the token contract address.');
+
+    // MetaMask auto-loads symbol/decimals from the contract and enables "Add
+    // token". Only fill the fields if they stay EMPTY (the RPC read failed) —
+    // re-filling an auto-populated field on every tick re-triggers validation
+    // and keeps the submit button from ever settling enabled.
+    const submit = page.locator(testId('custom-token-import-submit-button')).first();
+    const deadline = Date.now() + DEFAULT_TIMEOUT_MS;
+    while (Date.now() < deadline && !(await submit.isEnabled().catch(() => false))) {
+      if (token.symbol) {
+        await this.fillIfEmpty(page.locator(testId('custom-token-import-symbol-input')).first(), token.symbol);
+      }
+      if (token.decimals !== undefined) {
+        await this.fillIfEmpty(
+          page.locator(testId('custom-token-import-decimal-input')).first(),
+          String(token.decimals),
+        );
+      }
+      await wait(LOCATOR_PROBE_MS);
+    }
+
+    const added = await clickFirstVisible(
+      [submit, page.getByRole('button', { name: /^Add token$/i })],
+      DEFAULT_TIMEOUT_MS,
+    );
+    if (!added) {
+      throw new Error(
+        'MetaMask never enabled the custom-token "Add token" button — check the token address, ' +
+          'network, and (for contracts the RPC cannot read) pass symbol/decimals explicitly.',
+      );
+    }
+
+    // The import is confirmed by the success toast (and the form unmounting);
+    // a regression that dismisses the form without importing fails here.
+    const confirmed = await findVisibleLocator(
+      [
+        page.locator(testId('token-management-custom-token-success-toast')),
+        page.getByText(/was successfully added/i),
+      ],
+      DEFAULT_TIMEOUT_MS,
+      { requireEnabled: false },
+    );
+    if (!confirmed) {
+      await isHidden(page.locator(testId('custom-token-import-address-input')), DEFAULT_TIMEOUT_MS).catch(
+        () => undefined,
+      );
+    }
+  }
+
+  // Fills a metadata field only when it is currently empty, so an
+  // auto-populated value (MetaMask reading the contract) is left intact. A
+  // tight loop that unconditionally re-fills an auto-filled field re-triggers
+  // validation and prevents the submit/Next button from settling enabled.
+  private async fillIfEmpty(field: Locator, value: string) {
+    const current = await field.inputValue({ timeout: LOCATOR_PROBE_MS }).catch(() => null);
+    if (current === '') await field.fill(value).catch(() => undefined);
+  }
+
+  // 12.x: control-bar menu → "Import tokens" → Custom token tab → modal form.
+  private async importTokenViaModal(page: Page, token: RealWalletToken) {
     const importClicked = await clickFirstVisible(
       [page.locator(testId('importTokens')), page.getByText(/^Import tokens$/i)],
       DEFAULT_TIMEOUT_MS,
@@ -1742,26 +2125,23 @@ class MetaMaskRealWallet implements RealWalletController {
     );
     if (!addressFilled) throw new Error('Unable to fill the token contract address.');
 
-    // Upstream re-render race: only fill symbol/decimals while Next is still
-    // disabled (MetaMask clears the inputs when contract metadata loads).
+    // MetaMask auto-loads symbol/decimals from the contract and enables Next.
+    // Only fill the fields if they stay EMPTY (the RPC read failed) — re-filling
+    // an auto-populated field on every tick re-triggers validation and keeps
+    // Next from ever settling enabled (observed on 12.23.1).
     const nextButton = page.locator(testId('import-tokens-button-next')).first();
     const deadline = Date.now() + DEFAULT_TIMEOUT_MS;
     while (Date.now() < deadline && !(await nextButton.isEnabled().catch(() => false))) {
       if (token.symbol) {
-        await fillFirstVisible(
-          [page.locator(testId('import-tokens-modal-custom-symbol'))],
-          token.symbol,
-          SHORT_TIMEOUT_MS,
-        );
+        await this.fillIfEmpty(page.locator(testId('import-tokens-modal-custom-symbol')).first(), token.symbol);
       }
       if (token.decimals !== undefined) {
-        await fillFirstVisible(
-          [page.locator(testId('import-tokens-modal-custom-decimals'))],
+        await this.fillIfEmpty(
+          page.locator(testId('import-tokens-modal-custom-decimals')).first(),
           String(token.decimals),
-          SHORT_TIMEOUT_MS,
         );
       }
-      await wait(250);
+      await wait(LOCATOR_PROBE_MS);
     }
 
     const next = await clickFirstVisible([nextButton], SHORT_TIMEOUT_MS);
@@ -1784,7 +2164,6 @@ class MetaMaskRealWallet implements RealWalletController {
     await isHidden(page.locator(testId('import-tokens-modal-custom-address')), DEFAULT_TIMEOUT_MS).catch(
       () => undefined,
     );
-    await closeMetaMaskOverlay(page);
   }
 
   async confirmTransactionAndWaitForMining(
@@ -1879,15 +2258,153 @@ class MetaMaskRealWallet implements RealWalletController {
   }
 
   private async openAccountPicker(page: Page) {
-    const opened = await clickFirstVisible(
-      [page.locator(testId('account-menu-icon'))],
-      DEFAULT_TIMEOUT_MS,
-    );
+    // Under load the home screen can still be settling when the picker icon is
+    // probed; on retry, re-navigate to a clean home render before re-clicking.
+    // (The icon is an always-enabled control, so don't gate on enabled-ness.)
+    const home = page.url().split('#')[0];
+    let opened: Locator | undefined;
+    for (let attempt = 0; attempt < 3 && !opened; attempt += 1) {
+      if (attempt > 0) {
+        await page.goto(`${home}#/`).catch(() => undefined);
+        await waitForMetaMaskHome(page, DEFAULT_TIMEOUT_MS);
+      }
+      opened = await clickFirstVisible([page.locator(testId('account-menu-icon'))], DEFAULT_TIMEOUT_MS, {
+        requireEnabled: false,
+      });
+    }
     if (!opened) throw new Error('Unable to open the MetaMask account picker.');
+    await this.settleAccountList(page);
+  }
+
+  // Let the (virtualized) account list settle: wait for the first row, then
+  // for the row count to stop growing across two probe ticks.
+  private async settleAccountList(page: Page) {
     await waitForMetaMaskReady(page);
-    // Let the (virtualized) account list settle before callers scroll for
-    // the add-wallet button at its foot.
     await isVisible(accountRowLocator(page).first(), DEFAULT_TIMEOUT_MS).catch(() => undefined);
+    const rows = accountRowLocator(page);
+    const deadline = Date.now() + SHORT_TIMEOUT_MS;
+    let lastCount = -1;
+    while (Date.now() < deadline) {
+      const count = await rows.count().catch(() => lastCount);
+      if (count === lastCount) break;
+      lastCount = count;
+      await wait(LOCATOR_PROBE_MS);
+    }
+  }
+
+  // ── 13.x virtualized-picker account helpers ─────────────────────────────
+  // The 13.x picker renders only a small window of a (potentially huge)
+  // account tree, so name/address lookups must narrow it via the search box
+  // first. Entropy (SRP-derived) and keyring (imported) accounts both render
+  // as multichain-account-cell-<groupId> cells.
+  private accountGroupCells(page: Page) {
+    return page.locator(
+      '[data-testid^="multichain-account-cell-entropy:"], [data-testid^="multichain-account-cell-keyring:"]',
+    );
+  }
+
+  // Fill the picker search box to narrow the list to `term`. The testid is on
+  // a wrapper; the editable input is nested. No-op (returns false) when absent.
+  private async searchAccountPicker(page: Page, term: string) {
+    const input = page.locator(`${testId('multichain-account-list-search')} input`).first();
+    if (!(await isVisible(input, SHORT_TIMEOUT_MS).catch(() => false))) return false;
+    await input.fill('');
+    await input.fill(term);
+    // The filter debounces; give the list a beat to re-render.
+    await wait(700);
+    return true;
+  }
+
+  // The account cell whose display name (its first <p>) exactly equals `name`,
+  // after narrowing by search. Search is a contains filter, so the exact
+  // match is enforced client-side (cell.textContent concatenates
+  // name+address+balance, so an anchored full-text regex cannot be used).
+  private async findAccountCellByName(page: Page, name: string): Promise<Locator | undefined> {
+    await this.searchAccountPicker(page, name);
+    const cells = this.accountGroupCells(page);
+    const count = await cells.count();
+    for (let index = 0; index < count; index += 1) {
+      const cell = cells.nth(index);
+      const cellName = (
+        await cell.locator('p').first().textContent({ timeout: SHORT_TIMEOUT_MS }).catch(() => null)
+      )?.trim();
+      if (cellName === name) return cell;
+    }
+    return undefined;
+  }
+
+  // Resolves a 13.x account cell by exact display name, or — for an address —
+  // the derivable imported-keyring cell, else any cell whose text carries the
+  // (full or shortened) address.
+  private async find13xAccountCell(page: Page, nameOrAddress: string): Promise<Locator | undefined> {
+    if (!FULL_ADDRESS_PATTERN.test(nameOrAddress)) {
+      return this.findAccountCellByName(page, nameOrAddress);
+    }
+
+    const addressLc = nameOrAddress.toLowerCase();
+    await this.searchAccountPicker(page, nameOrAddress);
+
+    // Imported (private-key) accounts have a fully derivable cell testid.
+    const imported = page
+      .locator(testId(`multichain-account-cell-keyring:Simple Key Pair/${addressLc}`))
+      .first();
+    if (await isVisible(imported, SHORT_TIMEOUT_MS).catch(() => false)) return imported;
+
+    const short = shortAddress(nameOrAddress);
+    const cells = this.accountGroupCells(page);
+    const count = await cells.count();
+    for (let index = 0; index < count; index += 1) {
+      const cell = cells.nth(index);
+      const text = ((await cell.textContent({ timeout: SHORT_TIMEOUT_MS }).catch(() => '')) ?? '')
+        .replace(/\s+/g, '')
+        .toLowerCase();
+      if (text.includes(addressLc) || text.includes(short)) return cell;
+    }
+    return undefined;
+  }
+
+  // 13.x rename via a surfaced (searched/visible) account cell's row menu.
+  private async rename13xCellViaMenu(page: Page, cell: Locator, newName: string) {
+    await cell.hover().catch(() => undefined);
+    await wait(LOCATOR_PROBE_MS);
+    const accessoryOpened = await clickFirstVisible(
+      [cell.locator(testId('multichain-account-cell-end-accessory'))],
+      SHORT_TIMEOUT_MS,
+    );
+    const renameClicked =
+      accessoryOpened &&
+      (await clickFirstVisible(
+        [
+          page.locator(testId('multichain-account-menu-item-rename')),
+          page.getByRole('menuitem', { name: /^Rename$/i }),
+        ],
+        SHORT_TIMEOUT_MS,
+      ));
+    if (!renameClicked) {
+      throw new Error('Unable to open the MetaMask rename dialog from the account row menu.');
+    }
+    await this.fillAccountNameAndSave(page, newName);
+  }
+
+  // Polls the wallet-details "Add account" button until it reads exactly
+  // "Add account" (not "Syncing…"/"Adding account…") for two consecutive
+  // reads — only then is the create dispatch not silently dropped.
+  private async waitForAddAccountReady(addButton: Locator) {
+    const deadline = Date.now() + DEFAULT_TIMEOUT_MS;
+    let stable = 0;
+    while (Date.now() < deadline) {
+      const label = (await addButton.textContent({ timeout: SHORT_TIMEOUT_MS }).catch(() => ''))?.trim();
+      if (label === 'Add account') {
+        stable += 1;
+        if (stable >= 2) {
+          await wait(1_500);
+          return;
+        }
+      } else {
+        stable = 0;
+      }
+      await wait(LOCATOR_PROBE_MS);
+    }
   }
 
   private async openGlobalMenu(page: Page) {
@@ -1898,30 +2415,9 @@ class MetaMaskRealWallet implements RealWalletController {
     if (!opened) throw new Error('Unable to open the MetaMask global menu.');
   }
 
+  // 12.x rename: row options menu → Account details → editable label. (13.x
+  // renames through rename13xCellViaMenu / the account-details route.)
   private async renameAccountRow(page: Page, row: Locator, newName: string, label?: string) {
-    // 13.x: cell accessory → "Rename" menu item.
-    if (
-      await clickFirstVisible(
-        [row.locator(testId('multichain-account-cell-end-accessory'))],
-        SHORT_TIMEOUT_MS,
-      )
-    ) {
-      const renameClicked = await clickFirstVisible(
-        [
-          page.locator('.multichain-account-cell-menu-item[aria-label="Rename"]'),
-          page.getByRole('menuitem', { name: /^Rename$/i }),
-          page.getByText('Rename', { exact: true }),
-        ],
-        SHORT_TIMEOUT_MS,
-      );
-      if (renameClicked) {
-        await this.fillAccountNameAndSave(page, newName);
-        return;
-      }
-      await page.keyboard.press('Escape').catch(() => undefined);
-    }
-
-    // 12.x: row options menu → Account details → editable label.
     const menuOpened = await clickFirstVisible(
       [
         row.locator(testId('account-list-item-menu-button')),
@@ -1998,16 +2494,26 @@ class MetaMaskRealWallet implements RealWalletController {
   }
 
   private async readToggleState(toggle: Locator): Promise<boolean | undefined> {
-    const checkbox = toggle.locator('input[type="checkbox"]').first();
-    const checked = await checkbox.isChecked({ timeout: LOCATOR_PROBE_MS }).catch(() => undefined);
-    if (checked !== undefined) return checked;
+    // react-toggle-button's state lives in the label's toggle-button--on/off
+    // class. Its inner <input type=checkbox> is bound by `value`, NOT
+    // `checked` (and is never clicked directly), so isChecked() always reads
+    // false — read the class first. `toggle` is the label.toggle-button.
+    const ownClass = (await toggle.getAttribute('class').catch(() => null)) ?? '';
+    const labelClass = /toggle-button--(on|off)/.test(ownClass)
+      ? ownClass
+      : (await toggle
+          .locator('xpath=ancestor-or-self::label[contains(@class,"toggle-button")][1]')
+          .getAttribute('class')
+          .catch(() => null)) ?? ownClass;
+    if (/toggle-button--on/.test(labelClass)) return true;
+    if (/toggle-button--off/.test(labelClass)) return false;
 
     const ariaChecked = await toggle.getAttribute('aria-checked').catch(() => null);
     if (ariaChecked === 'true' || ariaChecked === 'false') return ariaChecked === 'true';
 
-    const className = (await toggle.getAttribute('class').catch(() => null)) ?? '';
-    if (/toggle-button--on/.test(className)) return true;
-    if (/toggle-button--off/.test(className)) return false;
+    const checkbox = toggle.locator('input[type="checkbox"]').first();
+    const checked = await checkbox.isChecked({ timeout: LOCATOR_PROBE_MS }).catch(() => undefined);
+    if (checked !== undefined) return checked;
     return undefined;
   }
 
@@ -2218,22 +2724,39 @@ export async function launchRealWallet(options: RealWalletLaunchOptions): Promis
     throw new Error(`MetaMask extension path does not exist: ${options.extensionPath}`);
   }
 
+  const generation = options.generation ?? detectWalletGeneration(options.extensionPath);
+  const headless = resolveRealWalletHeadless(options.headless);
+
   const profile = resolveRealWalletProfile(options.profileDir);
-  const context = await chromium.launchPersistentContext(profile.userDataDir, {
-    args: [
-      ...(profile.profileDirectory ? [`--profile-directory=${profile.profileDirectory}`] : []),
-      `--disable-extensions-except=${options.extensionPath}`,
-      `--load-extension=${options.extensionPath}`,
-      // Playwright's headless mode uses the headless shell, which cannot load
-      // extensions; new headless is enabled via the browser arg instead.
-      ...(options.headless ? ['--headless=new'] : []),
-    ],
-    baseURL: options.baseURL,
-    headless: false,
-    // Text fallbacks in the selector stacks are English; pin the UI locale.
-    locale: 'en-US',
-    slowMo: options.slowMo,
-  });
+  const context = await chromium
+    .launchPersistentContext(profile.userDataDir, {
+      args: [
+        ...(profile.profileDirectory ? [`--profile-directory=${profile.profileDirectory}`] : []),
+        `--disable-extensions-except=${options.extensionPath}`,
+        `--load-extension=${options.extensionPath}`,
+      ],
+      baseURL: options.baseURL,
+      // channel 'chromium' is the Playwright-blessed way to run extensions
+      // both headed and headless: it selects the full Chromium build (the
+      // default headless shell cannot load extensions).
+      channel: 'chromium',
+      headless,
+      // Text fallbacks in the selector stacks are English; pin the UI locale.
+      locale: 'en-US',
+      slowMo: options.slowMo,
+    })
+    .catch((error: unknown) => {
+      const message = error instanceof Error ? error.message : String(error);
+      if (/executable doesn't exist/i.test(message)) {
+        throw new Error(
+          "Real-wallet mode needs the full Chromium build for channel 'chromium' — a " +
+            'chromium_headless_shell-only install cannot load extensions. ' +
+            'Run: npx playwright install chromium\n' +
+            message,
+        );
+      }
+      throw error;
+    });
 
   const extensionId = await getExtensionId(context, extensionName);
   const page = await openExtensionHome(context, extensionId);
@@ -2243,6 +2766,7 @@ export async function launchRealWallet(options: RealWalletLaunchOptions): Promis
     extensionId,
     options.expectedAddress,
     passwordForSetup(options.setup),
+    generation,
   );
 
   await prepareMetaMask({

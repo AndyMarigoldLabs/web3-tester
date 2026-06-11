@@ -1,5 +1,5 @@
 import { type BuildWalletProfileOptions } from './real-wallet-cache.js';
-import { type RealWalletSession, type RealWalletSetup } from './real-wallet.js';
+import { type RealWalletSession, type RealWalletSetup, type WalletGeneration } from './real-wallet.js';
 export type RealWalletFixtureOptions = {
     /** Wallet setup. Defaults to WEB3_TESTER_REAL_WALLET_SECRET_RECOVERY_PHRASE / _PASSWORD. */
     setup?: RealWalletSetup;
@@ -18,6 +18,16 @@ export type RealWalletFixtureOptions = {
     profileDir?: string;
     baseURL?: string;
     expectedAddress?: string;
+    /**
+     * MetaMask UI generation to drive ('12x' | '13x'). Defaults to the major
+     * version in the extension's manifest; set explicitly for custom builds.
+     */
+    generation?: WalletGeneration;
+    /**
+     * Run the browser headless. No default — choose explicitly here or via
+     * WEB3_TESTER_REAL_WALLET_HEADLESS=true|false. Headed is the fully
+     * validated mode.
+     */
     headless?: boolean;
     /**
      * One-time profile customization baked into the cached profile (import

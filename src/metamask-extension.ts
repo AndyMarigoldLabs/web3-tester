@@ -8,12 +8,13 @@ import path from 'node:path';
 /**
  * The MetaMask build the adapter's selectors are maintained against. Bump
  * deliberately and re-run the real-wallet smoke suite when changing it
- * (`WEB3_TESTER_REAL_WALLET_SMOKE=true npm test`).
+ * (`npm run smoke:real-wallet`).
  *
- * The adapter is validated end to end against current MetaMask 13.x (the
- * "multichain" UI) and still works on the last 12.x line — the smoke suite
- * passes on both. Set WEB3_TESTER_METAMASK_VERSION=12.23.1 to test the older
- * UI generation.
+ * The adapter drives one UI generation per launch as explicit configuration
+ * (derived from the extension manifest, overridable via the `generation`
+ * option): 13.x (the "multichain" UI) is validated end to end and gates
+ * releases; the last 12.x line stays supported on a best-effort cadence. Set
+ * WEB3_TESTER_METAMASK_VERSION=12.23.1 to drive the older generation.
  */
 export const DEFAULT_METAMASK_VERSION = '13.34.1';
 
@@ -65,8 +66,10 @@ const unzip = async (zipPath: string, destination: string): Promise<void> => {
 export async function prepareMetaMaskExtension(
   options: PrepareMetaMaskExtensionOptions = {},
 ): Promise<string> {
+  // `||` (not `??`): an empty env var (e.g. a workflow_dispatch input left
+  // blank) must fall through to the pinned default, not become version "".
   const version =
-    options.version ?? process.env.WEB3_TESTER_METAMASK_VERSION ?? DEFAULT_METAMASK_VERSION;
+    options.version || process.env.WEB3_TESTER_METAMASK_VERSION || DEFAULT_METAMASK_VERSION;
   const cacheDir = options.cacheDir ?? defaultExtensionCacheDir();
   const destination = path.join(cacheDir, `metamask-chrome-${version}`);
   const manifestPath = path.join(destination, 'manifest.json');

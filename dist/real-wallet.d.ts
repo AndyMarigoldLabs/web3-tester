@@ -1,8 +1,17 @@
-import { type BrowserContext } from '@playwright/test';
+import { type BrowserContext, type Locator } from '@playwright/test';
 export type RealWalletProfile = {
     profileDirectory?: string;
     userDataDir: string;
 };
+/**
+ * MetaMask UI generation the selector surface drives. '13x' is the
+ * multichain UI (validated against 13.34.1, the pinned default); '12x' is
+ * the classic UI (last validated against 12.23.1). Both are first-class
+ * configuration: the generation is derived from the extension manifest at
+ * launch and selects which generation's selectors run — the other
+ * generation's selectors are not probed as fallbacks.
+ */
+export type WalletGeneration = '12x' | '13x';
 export type RealWalletSetup = {
     password?: string;
     seedPhrase?: string;
@@ -17,6 +26,20 @@ export type RealWalletLaunchOptions = {
     expectedAddress?: string;
     extensionName?: string;
     extensionPath: string;
+    /**
+     * UI generation to drive. Defaults to the major version in the extension's
+     * manifest (>= 13 → '13x'). Set explicitly for custom builds whose
+     * manifest version does not reflect their UI generation.
+     */
+    generation?: WalletGeneration;
+    /**
+     * Run the browser headless. There is deliberately no default — choose
+     * explicitly here or via WEB3_TESTER_REAL_WALLET_HEADLESS=true|false.
+     * Headed is the fully validated mode; headless loads the extension through
+     * the full Chromium build (channel 'chromium') and is validated for
+     * extension load + clipboard, but the full confirmation journey is not
+     * proven headless yet.
+     */
     headless?: boolean;
     profileDir: string;
     setup?: RealWalletSetup;
@@ -105,6 +128,31 @@ export type RealWalletSession = RealWalletController & {
     extensionId: string;
     wallet: RealWalletController;
 };
+/**
+ * A selector-stack entry optionally scoped to one UI generation. Bare
+ * locators apply to both generations; tagged entries are dropped — not
+ * probed — when the wallet is configured for the other generation, so a
+ * wrong-generation selector can never burn its probe budget.
+ */
+type GenLocator = Locator | {
+    gen: WalletGeneration;
+    loc: Locator;
+};
+/**
+ * @internal Resolves a generation-annotated selector stack against the
+ * configured generation: tagged entries of the other generation are dropped,
+ * bare entries pass through, and relative order is preserved.
+ */
+export declare function resolveGenLocators(locators: readonly GenLocator[], generation: WalletGeneration): Locator[];
+/** @internal Maps an extension manifest version to the UI generation it ships. */
+export declare function walletGenerationForVersion(version: string): WalletGeneration;
+/**
+ * @internal Resolves the headed/headless choice. There is deliberately no
+ * default: the two modes have different validation status (headed is fully
+ * validated end to end; headless is validated for extension load and the
+ * clipboard round-trip only), so every run must pick one explicitly.
+ */
+export declare function resolveRealWalletHeadless(explicit?: boolean): boolean;
 export declare function resolveRealWalletProfile(profileDir: string): RealWalletProfile;
 /** @internal Validates and trims a 32-byte hex private key (0x optional). */
 export declare function normalizePrivateKey(privateKey: string): string;
@@ -116,4 +164,5 @@ export declare function isFullTxHash(value: string | undefined): value is `0x${s
  */
 export declare function accountRowMatcher(identifier: string): RegExp;
 export declare function launchRealWallet(options: RealWalletLaunchOptions): Promise<RealWalletSession>;
+export {};
 //# sourceMappingURL=real-wallet.d.ts.map

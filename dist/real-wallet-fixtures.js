@@ -38,6 +38,7 @@ export const test = base.extend({
                 extensionPath,
                 setup,
                 headless: options.headless,
+                generation: options.generation,
                 customize: options.profileSetup,
             });
             profileDir = await cloneWalletProfile(cachedProfile, path.join(testInfo.outputDir, 'metamask-profile'));
@@ -46,6 +47,7 @@ export const test = base.extend({
             baseURL: options.baseURL,
             expectedAddress: options.expectedAddress,
             extensionPath,
+            generation: options.generation,
             headless: options.headless,
             profileDir,
             setup,

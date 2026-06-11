@@ -3,12 +3,14 @@
 **Status: all seven features shipped in 0.3.0** (commits `598eb66` multichain,
 `f74beb1` multi-account, `ef26f75` deal helpers, `71eeefe` EIP-5792/7702,
 `c6a93eb` matchers, `accc7bf` WalletConnect, `fe4d409` real-wallet surface).
-The hermetic suite (159 tests) is green; the env-gated WalletConnect-relay and
-real-wallet smoke suites cover the rest. One follow-up remains: the
-real-wallet account/token/settings surface methods are implemented and
-bundle-verified but their full dual-version live smoke is `fixme` pending the
-selector-stabilization pass (live MetaMask UI is timing-sensitive and
-feature-flag dependent).
+The hermetic suite is green; the env-gated WalletConnect-relay and
+real-wallet smoke suites cover the rest. The former follow-up — the
+real-wallet surface smoke was `fixme` pending selector stabilization — landed
+with the 13.x speedup/stabilization pass (docs/REALWALLET_13X_PLAN.md):
+generation is now an explicit configuration (no cross-generation selector
+fallbacks), the surface tests are un-`fixme`'d and split into focused smoke
+tests, and `npm run smoke:real-wallet` on the pinned 13.x build gates
+releases (12.x stays supported best-effort).
 
 All seven ecosystem-gap features from the 2026-06-09 library review were committed scope for 0.3.0.
 Each had an implementation-ready design that survived adversarial feasibility review; the full designs

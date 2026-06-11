@@ -79,6 +79,7 @@ export type {
   RealWalletSession,
   RealWalletSetup,
   RealWalletToken,
+  WalletGeneration,
 } from './real-wallet.js';
 export type { PrepareMetaMaskExtensionOptions } from './metamask-extension.js';
 export type { BuildWalletProfileOptions } from './real-wallet-cache.js';

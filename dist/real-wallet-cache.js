@@ -9,11 +9,30 @@ import { launchRealWallet, resolveRealWalletProfile, } from './real-wallet.js';
 const READY_MARKER = '.web3-tester-profile-ready';
 // Chromium singleton artifacts must never travel with a cloned profile.
 const SINGLETON_FILES = ['SingletonLock', 'SingletonCookie', 'SingletonSocket'];
+// Regenerable Chromium cache subtrees dominate a cached profile's size;
+// pruning them before the copy makes clones ~3x faster and ~75% smaller.
+// 'Local Extension Settings' (the MetaMask vault) and 'IndexedDB' (13.x
+// debounced extension state) must always travel — never list them here.
+const SKIP_CLONE_DIRS = new Set([
+    'Cache',
+    'Code Cache',
+    'DawnGraphiteCache',
+    'DawnWebGPUCache',
+    'GPUCache',
+    'GraphiteDawnCache',
+    'GrShaderCache',
+    'Service Worker',
+    'ShaderCache',
+    'component_crx_cache',
+    'extensions_crx_cache',
+]);
 /**
  * Polls the profile's extension storage (IndexedDB leveldb + blob and Local
  * Extension Settings) from Node until a write newer than `since` lands and
- * the directories stay quiet for `quietMs`. Times out silently — the
- * onboarding dwell remains the backstop.
+ * the directories stay quiet for `quietMs` (default 1500ms — 500ms of margin
+ * above MetaMask 13.x's verified 1000ms OperationSafener debounce). Times
+ * out silently; the customize-persistence smoke test is the regression trap
+ * for a missed flush.
  */
 export async function waitForExtensionStatePersisted(profileDir, extensionId, options = {}) {
     const since = options.since ?? Date.now();
@@ -122,13 +141,19 @@ export async function buildWalletProfile(options) {
             fs.rmSync(lockDir, { recursive: true, force: true });
             return buildWalletProfile(options);
         }
-        const deadline = Date.now() + 180_000;
+        // Keep waiting as long as the builder's lock stays fresh — the builder
+        // heartbeats the lock every 60s precisely because a customize build can
+        // run well past the 5-minute stale threshold. A fixed deadline shorter
+        // than that would abandon a healthy builder. The hard ceiling only
+        // backstops a hang that somehow keeps the lock fresh without finishing.
+        const deadline = Date.now() + 1_800_000;
         while (Date.now() < deadline) {
             if (fs.existsSync(marker)) {
                 return profileDir;
             }
             if (!fs.existsSync(lockDir) || lockIsStale()) {
-                // The builder died without producing a profile; take over.
+                // The builder died (or stalled past the stale threshold) without
+                // producing a profile; take over.
                 fs.rmSync(lockDir, { recursive: true, force: true });
                 return buildWalletProfile(options);
             }
@@ -152,28 +177,36 @@ export async function buildWalletProfile(options) {
     try {
         fs.rmSync(profileDir, { recursive: true, force: true });
         fs.mkdirSync(profileDir, { recursive: true });
+        const onboardStartedAt = Date.now();
         const session = await launchRealWallet({
             extensionPath: options.extensionPath,
             profileDir,
             setup: options.setup,
             headless: options.headless,
+            generation: options.generation,
             // Verifying against the seed-derived address guarantees the build
             // actually imported a wallet — a silently skipped onboarding would
             // otherwise produce a cached profile with no vault.
             expectedAddress: mnemonicToAccount(options.setup.seedPhrase).address,
         });
+        // 13.x flushes extension state through a debounced write (safe-reload's
+        // OperationSafener, a 1000ms trailing-edge debounce around
+        // persistenceManager.set()); wait for the post-onboarding (and, when
+        // customizing, post-mutation) write to land and stay quiet before
+        // closing — a missed flush silently replays onboarding or loses the
+        // customization.
         if (options.customize) {
             const mutationsStartedAt = Date.now();
             await options.customize.run(session);
-            // 13.x flushes extension state to IndexedDB on a debounce: dwell past
-            // the debounce window (the same fix onboarding needs), then wait for
-            // the post-mutation write to land and go quiet before closing — a
-            // missed flush silently loses the customization.
-            await sleep(3_000);
             await waitForExtensionStatePersisted(profileDir, session.extensionId, {
                 since: mutationsStartedAt,
-                quietMs: 3_000,
                 timeoutMs: 20_000,
+            });
+        }
+        else {
+            await waitForExtensionStatePersisted(profileDir, session.extensionId, {
+                since: onboardStartedAt,
+                timeoutMs: 15_000,
             });
         }
         await session.close();
@@ -199,7 +232,11 @@ export async function cloneWalletProfile(cachedProfileDir, targetDir) {
         throw new Error(`${cachedProfileDir} is not a completed web3-tester profile cache (missing ${READY_MARKER}).`);
     }
     fs.rmSync(targetDir, { recursive: true, force: true });
-    fs.cpSync(cachedProfileDir, targetDir, { recursive: true });
+    fs.cpSync(cachedProfileDir, targetDir, {
+        recursive: true,
+        // Returning false for a directory prunes its whole subtree.
+        filter: (source) => !SKIP_CLONE_DIRS.has(path.basename(source)),
+    });
     for (const file of [READY_MARKER, ...SINGLETON_FILES]) {
         fs.rmSync(path.join(targetDir, file), { force: true });
     }

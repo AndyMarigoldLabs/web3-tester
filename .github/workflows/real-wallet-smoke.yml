@@ -1,0 +1,54 @@
+# Manual release gate: the live real-MetaMask smoke (full journey +
+# account/token/settings surface) against the pinned 13.x build. Hermetic CI
+# never runs this; dispatch it (or run `npm run smoke:real-wallet` locally)
+# before tagging a release — see docs/RELEASE_CHECKLIST.md.
+name: Real-wallet smoke
+
+on:
+  workflow_dispatch:
+    inputs:
+      metamask-version:
+        description: 'MetaMask release to smoke (empty = pinned default)'
+        required: false
+        default: ''
+
+jobs:
+  smoke:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install Foundry (anvil)
+        uses: foundry-rs/foundry-toolchain@v1
+
+      - name: Install dependencies
+        run: npm ci
+
+      # The FULL Chromium build, not chromium_headless_shell: real-wallet
+      # mode launches channel 'chromium', and the shell cannot load
+      # extensions.
+      - name: Install Playwright Chromium (full)
+        run: npx playwright install --with-deps chromium
+
+      # Headed under Xvfb — headed is the fully validated mode; flip to
+      # WEB3_TESTER_REAL_WALLET_HEADLESS=true only once the full-journey
+      # smoke is proven headless on both supported generations.
+      - name: Real-wallet smoke (headed via Xvfb)
+        run: xvfb-run --auto-servernum npm run smoke:real-wallet
+        env:
+          WEB3_TESTER_REAL_WALLET_HEADLESS: 'false'
+          WEB3_TESTER_METAMASK_VERSION: ${{ inputs.metamask-version }}
+
+      - name: Upload Playwright report on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: real-wallet-smoke-report
+          path: playwright-report/
+          retention-days: 7

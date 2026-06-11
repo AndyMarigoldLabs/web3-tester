@@ -1,4 +1,4 @@
-import { type RealWalletSession, type RealWalletSetup } from './real-wallet.js';
+import { type RealWalletSession, type RealWalletSetup, type WalletGeneration } from './real-wallet.js';
 export type BuildWalletProfileOptions = {
     /** Unpacked MetaMask extension directory (see prepareMetaMaskExtension). */
     extensionPath: string;
@@ -6,8 +6,17 @@ export type BuildWalletProfileOptions = {
     setup: RealWalletSetup;
     /** Directory cached profiles live in. Defaults to ~/.cache/web3-tester/profiles. */
     cacheDir?: string;
-    /** Run the one-time onboarding in headless (new headless) mode. */
+    /**
+     * Run the one-time onboarding headless. No default — set it here or via
+     * WEB3_TESTER_REAL_WALLET_HEADLESS=true|false (see RealWalletLaunchOptions).
+     */
     headless?: boolean;
+    /**
+     * UI generation to drive during onboarding/customization. Defaults to the
+     * extension manifest's major version; set it (matching the per-test launch)
+     * for custom builds whose manifest version does not reflect their UI.
+     */
+    generation?: WalletGeneration;
     /** Rebuild even if a cached profile exists. */
     force?: boolean;
     /**
@@ -28,8 +37,10 @@ export type BuildWalletProfileOptions = {
 /**
  * Polls the profile's extension storage (IndexedDB leveldb + blob and Local
  * Extension Settings) from Node until a write newer than `since` lands and
- * the directories stay quiet for `quietMs`. Times out silently — the
- * onboarding dwell remains the backstop.
+ * the directories stay quiet for `quietMs` (default 1500ms — 500ms of margin
+ * above MetaMask 13.x's verified 1000ms OperationSafener debounce). Times
+ * out silently; the customize-persistence smoke test is the regression trap
+ * for a missed flush.
  */
 export declare function waitForExtensionStatePersisted(profileDir: string, extensionId: string, options?: {
     since?: number;

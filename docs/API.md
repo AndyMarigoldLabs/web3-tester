@@ -154,6 +154,9 @@ import { expect, test } from '@marigoldlabs/web3-tester/real-wallet-fixtures';
 test.use({
   realWalletOptions: {
     setup: { seedPhrase: process.env.WEB3_TESTER_REAL_WALLET_SECRET_RECOVERY_PHRASE },
+    // Required: pick headed or headless explicitly (or set
+    // WEB3_TESTER_REAL_WALLET_HEADLESS). Headed is the fully validated mode.
+    headless: false,
   },
 });
 
@@ -167,7 +170,7 @@ test('confirms a transaction', async ({ page, realWallet }) => {
 | Fixture | Scope | Description |
 | --- | --- | --- |
 | `realWallet` | test | `RealWalletSession` over a disposable clone of the cached profile. |
-| `realWalletOptions` | option | Setup, extension path/version, baseURL, expectedAddress, headless, explicit profileDir. |
+| `realWalletOptions` | option | Setup, extension path/version, baseURL, expectedAddress, generation, headless (required choice — see `launchRealWallet`), explicit profileDir. |
 | `context`, `page` | test | Rebound to the persistent extension context. |
 
 Without an explicit `profileDir`, the fixture downloads the pinned MetaMask
@@ -190,16 +193,22 @@ const extensionPath = await prepareMetaMaskExtension({
 });
 ```
 
-`buildWalletProfile({ extensionPath, setup })` and
+`buildWalletProfile({ extensionPath, setup, headless })` and
 `cloneWalletProfile(cachedDir, targetDir)` (exported from the root entry)
 manage the onboarded-profile cache directly for custom setups.
+`buildWalletProfile` takes the same required `headless` choice (and optional
+`generation`) as `launchRealWallet`.
 
 Both current MetaMask 13.x ("multichain" UI) and the older 12.x UI are
-supported and validated by the smoke suite. `getAccountAddress()` without an
-`expectedAddress` returns a valid address on both, but 13.x's multichain
-account tree has no single "selected" account before a dapp connects, so on
-13.x prefer passing `expectedAddress` (verified against the wallet UI) or read
-the connected account from your dapp.
+supported as explicit configurations: the UI generation is derived from the
+extension manifest at launch (overridable via the `generation` option) and
+only that generation's selectors are driven — the other generation is never
+probed as a fallback. 13.x (the pinned default) gates releases via the smoke
+suite; 12.x is supported on a best-effort validation cadence.
+`getAccountAddress()` without an `expectedAddress` returns a valid address on
+both, but 13.x's multichain account tree has no single "selected" account
+before a dapp connects, so on 13.x prefer passing `expectedAddress` (verified
+against the wallet UI) or read the connected account from your dapp.
 
 ## Real Wallet account/token/settings surface
 
@@ -209,22 +218,27 @@ activity flows across both pinned UI generations (12.23.1 and 13.34.1):
 | Method | Notes |
 | --- | --- |
 | `importWalletFromPrivateKey(key)` | Imports an "Imported" keyring account; throws MetaMask's inline error (e.g. duplicate). Use a non-mnemonic key — 13.x SRP discovery derives the well-known dev keys. |
-| `addNewAccount(name?)` | Next derived SRP account; 13.x creates then renames. |
+| `addNewAccount(name?)` | Next derived SRP account (13.x creates it on the wallet-details page and renames via the account-details route). On 13.x the create is a background dispatch the account-tree sync can drop, so the method settles the tree and retries; on huge wallets it is reliable but not instant. `switchAccount`/`renameAccount` narrow the virtualized 13.x picker via its search box and match the exact display name. |
 | `switchAccount(nameOrAddress)` | By display name (both gens) or address (best-effort on 13.x, whose cells show names). |
 | `renameAccount(current, new)` | |
 | `lock()` / `unlock(password?)` | |
 | `resetAccount()` | Clears activity/nonce data (12.x Advanced; 13.x Developer tools, with a settings-search fallback). |
-| `toggleShowTestNetworks(on?)` | Idempotent with an explicit state. 13.x renders the toggle only when a test-chain network is configured. |
+| `toggleShowTestNetworks(on?)` | Idempotent with an explicit state. 13.x drives the toggle on the standalone `#/networks` page (the network picker popover hides it); enabling reveals the built-in testnets (e.g. Sepolia becomes selectable via `switchNetwork`). |
 | `importToken(token)` / `approveAddToken()` (alias `addNewToken()`) / `rejectAddToken()` | Manual import and `wallet_watchAsset` approve/reject. |
 | `confirmTransactionAndWaitForMining(options?)` | Confirms, waits for the activity row to reach confirmed, returns `{ txHash? }` (best-effort clipboard read — undefined on failure; the wait still completes). |
 | `rejectTokenPermission()` | |
 
-Account mutations during the cached-profile `customize` hook survive profile
-close on 13.x's debounced IndexedDB persistence
-(`waitForExtensionStatePersisted` waits for the flush). Note: the full
-end-to-end smoke for these methods is opt-in and pending the dual-version
-selector stabilization pass — the selectors are bundle-verified against both
-pinned builds. (Descoped from Synpress parity for now:
+Account/network/token mutations during the cached-profile `customize` hook
+survive profile close on 13.x's debounced IndexedDB persistence
+(`waitForExtensionStatePersisted` waits for the flush). One caveat: a
+`importWalletFromPrivateKey` inside a customize hook is best-effort — 13.x
+writes the encrypted keyring in a delayed second wave whose timing is
+variable, so it may not survive the profile close; prefer `addNewAccount` /
+`addNetwork` / `importToken` for build-time customization, or import the key
+per-test instead of baking it into the cached profile. The surface methods are
+covered by focused opt-in smoke tests (`npm run smoke:real-wallet`) against the
+pinned 13.x build; run the smoke before every release (see
+docs/RELEASE_CHECKLIST.md). (Descoped from Synpress parity for now:
 `openTransactionDetails`/`closeTransactionDetails` and the
 `eth_getEncryptionPublicKey`/`eth_decrypt` helpers.)
 
@@ -237,6 +251,9 @@ const session = await launchRealWallet({
   extensionPath: process.env.FJORD_REAL_WALLET_EXTENSION_PATH as string,
   profileDir: process.env.FJORD_REAL_WALLET_PROFILE_DIR as string,
   expectedAddress: process.env.FJORD_REAL_WALLET_ADDRESS,
+  // Required: choose headed/headless explicitly (or set
+  // WEB3_TESTER_REAL_WALLET_HEADLESS=true|false).
+  headless: false,
   setup: process.env.FJORD_REAL_WALLET_PASSWORD || process.env.FJORD_REAL_WALLET_SECRET_RECOVERY_PHRASE
     ? {
         password: process.env.FJORD_REAL_WALLET_PASSWORD,
@@ -257,7 +274,8 @@ Options:
 | `baseURL` | Optional Playwright base URL for pages opened from the returned context. |
 | `expectedAddress` | Optional account address assertion after unlock/import. |
 | `extensionName` | Extension name used to resolve the extension ID. Defaults to `MetaMask`. |
-| `headless` | Runs Chromium with `--headless=new` (extensions cannot load in Playwright's default headless shell). Defaults to `false`. |
+| `generation` | MetaMask UI generation to drive (`'12x'` \| `'13x'`). Defaults to the major version in the extension's manifest; set explicitly for custom builds. Only the configured generation's selectors run. |
+| `headless` | Required choice with no default: pass `true`/`false` here or set `WEB3_TESTER_REAL_WALLET_HEADLESS`. Launches use `channel: 'chromium'` (the full Chromium build — Playwright's headless shell cannot load extensions), so headless needs `npx playwright install chromium`. Headed is the fully validated mode; headless is validated for extension load and clipboard, not yet for the full confirmation journey. |
 | `setup.password` | Optional password used to unlock MetaMask, or to import a seed phrase when onboarding is visible. |
 | `setup.seedPhrase` | Seed phrase used if MetaMask opens on onboarding. When no password is supplied, web3-tester imports with a deterministic test profile password. |
 | `slowMo` | Optional Playwright slow-motion delay. |
@@ -276,7 +294,7 @@ Returned session methods:
 | `switchNetwork(name)` | Switches MetaMask to a network by display name. |
 | `approveNewNetwork()` / `rejectNewNetwork()` | Resolves a dapp-triggered `wallet_addEthereumChain` prompt. |
 | `approveSwitchNetwork()` / `rejectSwitchNetwork()` | Resolves a dapp-triggered `wallet_switchEthereumChain` prompt. |
-| `getAccountAddress()` | Returns the selected MetaMask account (full address; read via the header copy button). |
+| `getAccountAddress()` | Returns the selected MetaMask account (full address). 12.x reads the header copy button; 13.x reads the account picker's Addresses view via the clipboard — prefer passing `expectedAddress` on 13.x. |
 | `close()` | Closes the persistent browser context. |
 
 Confirmation flows open `chrome-extension://<id>/notification.html` on demand

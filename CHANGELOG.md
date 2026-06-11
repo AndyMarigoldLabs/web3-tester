@@ -1,5 +1,60 @@
 # Changelog
 
+## 0.4.0 — 2026-06-11 — real-wallet 13.x hardening
+
+Speed and usability pass on the real-MetaMask adapter, validated live against
+13.34.1 (see `docs/REALWALLET_13X_PLAN.md`).
+
+**Breaking (real-wallet only):** the headed/headless choice is now mandatory.
+`launchRealWallet`, `buildWalletProfile`, and the `realWallet` fixture throw
+unless `headless` is set explicitly or `WEB3_TESTER_REAL_WALLET_HEADLESS` is
+`true`/`false`. Launches now use Playwright's `channel: 'chromium'` (the full
+Chromium build — run `npx playwright install chromium`) instead of injecting
+`--headless=new`.
+
+**Configuration, not fallbacks:** the MetaMask UI generation (`12x`/`13x`) is
+derived from the extension manifest and selectable via the new `generation`
+option. Only the configured generation's selectors are driven — the other
+generation is no longer probed as a fallback, removing dead cross-generation
+selector probes. 13.34.1 gates releases (`npm run smoke:real-wallet`); 12.x is
+supported best-effort.
+
+**Fixes against 13.34.1's redesigned surfaces** (each live-validated, even
+against the well-known anvil seed whose ~700 SRP-discovered accounts make the
+picker virtualized and the account-tree sync race account creation):
+- `importWalletFromPrivateKey` — no more 30s dead-probe; routes back to the
+  wallet home afterward (13.x parks the SPA on the choose-wallet-type page).
+- `addNewAccount` — creates on the wallet details page (account creation moved
+  off the picker), settling the account tree and retrying the background
+  create across navigations, detecting the new account by its exact testid.
+- `switchAccount` / `renameAccount` — narrow the virtualized picker via its
+  search box and match the exact display name (or the imported account's
+  address-derived cell); rename a freshly created account via the
+  account-details route.
+- `importToken` — walks the `Manage tokens` → custom-token-import page flow.
+- `toggleShowTestNetworks` — uses the standalone `#/networks` page (the picker
+  popover hides the toggle) and force-flips the hidden screen-reader checkbox;
+  enabling it reveals the built-in testnets (Sepolia et al.).
+
+Faster cold builds: pruned cache subtrees in profile clones and replaced fixed
+IndexedDB-flush dwells with state-based polling.
+
+**Live smoke (13.34.1):** the full `npm run smoke:real-wallet` surface passes
+— full journey, account create/switch/rename, lock/unlock, importToken,
+confirmTransactionAndWaitForMining, watchAsset approve/reject, resetAccount,
+test-networks enable, private-key import, and the customize-hook persistence
+trap (a custom-network add — the cleanest core-state mutation; private-key
+imports persist best-effort, their encrypted keyring landing in a delayed
+wave). The wallet methods carry internal retries for MetaMask's account-tree
+sync race; the runner is single-worker (the live UI flakes a different test
+each run when two MetaMask instances contend for CPU) with `--retries=1` as a
+backstop. 12.23.1 is supported best-effort as an explicit `generation`
+configuration (`WEB3_TESTER_METAMASK_VERSION=12.23.1`): the same surface
+passes there, except the 13.x-only test-networks-enable test (skipped) and
+`importToken`, whose older 12.x modal has an unreliable metadata-load (the
+"Next" button intermittently stays disabled) — `importToken` is best-effort
+on 12.x and its smoke test is skipped there.
+
 ## 0.3.0 — 2026-06-10
 
 The ecosystem build-out: multi-chain mock routing, multi-account & two-user

@@ -1,12 +1,13 @@
 /**
  * The MetaMask build the adapter's selectors are maintained against. Bump
  * deliberately and re-run the real-wallet smoke suite when changing it
- * (`WEB3_TESTER_REAL_WALLET_SMOKE=true npm test`).
+ * (`npm run smoke:real-wallet`).
  *
- * The adapter is validated end to end against current MetaMask 13.x (the
- * "multichain" UI) and still works on the last 12.x line — the smoke suite
- * passes on both. Set WEB3_TESTER_METAMASK_VERSION=12.23.1 to test the older
- * UI generation.
+ * The adapter drives one UI generation per launch as explicit configuration
+ * (derived from the extension manifest, overridable via the `generation`
+ * option): 13.x (the "multichain" UI) is validated end to end and gates
+ * releases; the last 12.x line stays supported on a best-effort cadence. Set
+ * WEB3_TESTER_METAMASK_VERSION=12.23.1 to drive the older generation.
  */
 export declare const DEFAULT_METAMASK_VERSION = "13.34.1";
 export type PrepareMetaMaskExtensionOptions = {

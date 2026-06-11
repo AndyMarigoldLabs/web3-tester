@@ -10,6 +10,7 @@ import {
   launchRealWallet,
   type RealWalletSession,
   type RealWalletSetup,
+  type WalletGeneration,
 } from './real-wallet.js';
 
 export type RealWalletFixtureOptions = {
@@ -30,6 +31,16 @@ export type RealWalletFixtureOptions = {
   profileDir?: string;
   baseURL?: string;
   expectedAddress?: string;
+  /**
+   * MetaMask UI generation to drive ('12x' | '13x'). Defaults to the major
+   * version in the extension's manifest; set explicitly for custom builds.
+   */
+  generation?: WalletGeneration;
+  /**
+   * Run the browser headless. No default — choose explicitly here or via
+   * WEB3_TESTER_REAL_WALLET_HEADLESS=true|false. Headed is the fully
+   * validated mode.
+   */
   headless?: boolean;
   /**
    * One-time profile customization baked into the cached profile (import
@@ -88,6 +99,7 @@ export const test = base.extend<RealWalletFixtures>({
         extensionPath,
         setup,
         headless: options.headless,
+        generation: options.generation,
         customize: options.profileSetup,
       });
       profileDir = await cloneWalletProfile(
@@ -100,6 +112,7 @@ export const test = base.extend<RealWalletFixtures>({
       baseURL: options.baseURL,
       expectedAddress: options.expectedAddress,
       extensionPath,
+      generation: options.generation,
       headless: options.headless,
       profileDir,
       setup,

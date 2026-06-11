@@ -7,6 +7,13 @@ Use this before publishing a new version or pinning it inside Fjord v4.
 - `npm run typecheck`
 - `npm run build`
 - `npm test`
+- `npm run smoke:real-wallet` — the live real-MetaMask smoke on the pinned
+  13.x build (headed; needs a display or Xvfb). Hermetic CI and the dist
+  freshness gate do not cover live extension behavior, so this is a release
+  requirement, not optional. Run it locally or dispatch the "Real-wallet
+  smoke" GitHub workflow and link the green run. 12.x
+  (`WEB3_TESTER_METAMASK_VERSION=12.23.1`) is best-effort — run it when
+  release notes touch the real-wallet adapter.
 - `rg -n "FJORD_PRIVATE_KEY\\s*=\\s*0x[0-9a-fA-F]{64}|PRIVATE_KEY=.*[0-9a-fA-F]{64}" . -g "!node_modules/**" -g "!dist/**" -g "!.npm-cache/**"`
 - Confirm `.env` is ignored.
 - Confirm `dist/` is generated locally but not required in source review unless the team wants committed build output.
