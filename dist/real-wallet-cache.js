@@ -4,9 +4,11 @@ import os from 'node:os';
 import path from 'node:path';
 import { mnemonicToAccount } from 'viem/accounts';
 import { extensionManifestVersion } from './metamask-extension.js';
+import { launchRealWalletExtension, readExtensionManifest, } from './real-wallet-extension.js';
 import { passwordForSetup } from './real-wallet-setup.js';
 import { launchRealWallet, resolveRealWalletProfile, } from './real-wallet.js';
 const READY_MARKER = '.web3-tester-profile-ready';
+const METAMASK_PROFILE_CACHE_SCHEMA = 2;
 // Chromium singleton artifacts must never travel with a cloned profile.
 const SINGLETON_FILES = ['SingletonLock', 'SingletonCookie', 'SingletonSocket'];
 // Regenerable Chromium cache subtrees dominate a cached profile's size;
@@ -92,6 +94,7 @@ export async function waitForExtensionStatePersisted(profileDir, extensionId, op
 export const defaultProfileCacheDir = () => path.join(os.homedir(), '.cache', 'web3-tester', 'profiles');
 const cacheKey = (options) => createHash('sha256')
     .update(JSON.stringify({
+    cacheSchema: METAMASK_PROFILE_CACHE_SCHEMA,
     seedPhrase: options.setup.seedPhrase,
     password: passwordForSetup(options.setup),
     extensionVersion: extensionManifestVersion(options.extensionPath),
@@ -99,20 +102,30 @@ const cacheKey = (options) => createHash('sha256')
 }))
     .digest('hex')
     .slice(0, 16);
-const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
-/**
- * Builds (once) and returns a cached, fully onboarded MetaMask profile
- * directory keyed by (seed phrase, password, extension version). The first
- * call walks MetaMask onboarding in a real browser; subsequent calls return
- * instantly. Use cloneWalletProfile to obtain a disposable per-test copy —
- * never launch the cached directory directly.
- */
-export async function buildWalletProfile(options) {
-    if (!options.setup.seedPhrase) {
-        throw new Error('buildWalletProfile requires setup.seedPhrase.');
+const extensionProfileCacheKey = (options) => {
+    const manifest = readExtensionManifest(options.extensionPath);
+    const userKey = options.cacheKey.trim();
+    if (!userKey) {
+        throw new Error('buildWalletExtensionProfile requires a non-empty cacheKey.');
     }
+    return createHash('sha256')
+        .update(JSON.stringify({
+        kind: 'real-wallet-extension',
+        extensionPath: path.resolve(options.extensionPath),
+        extensionId: options.extensionId,
+        extensionName: options.extensionName,
+        manifestName: manifest.name,
+        manifestVersion: manifest.version,
+        initialPage: options.initialPage,
+        userKey,
+    }))
+        .digest('hex')
+        .slice(0, 16);
+};
+const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+const buildCachedProfile = async (options) => {
     const cacheDir = options.cacheDir ?? defaultProfileCacheDir();
-    const profileDir = path.join(cacheDir, cacheKey(options));
+    const profileDir = path.join(cacheDir, options.cacheKey);
     const marker = path.join(profileDir, READY_MARKER);
     if (options.force) {
         fs.rmSync(profileDir, { recursive: true, force: true });
@@ -139,31 +152,27 @@ export async function buildWalletProfile(options) {
     catch {
         if (lockIsStale()) {
             fs.rmSync(lockDir, { recursive: true, force: true });
-            return buildWalletProfile(options);
+            return buildCachedProfile(options);
         }
         // Keep waiting as long as the builder's lock stays fresh — the builder
-        // heartbeats the lock every 60s precisely because a customize build can
-        // run well past the 5-minute stale threshold. A fixed deadline shorter
-        // than that would abandon a healthy builder. The hard ceiling only
-        // backstops a hang that somehow keeps the lock fresh without finishing.
+        // heartbeats the lock every 60s precisely because setup/customize builds
+        // can run well past the 5-minute stale threshold. A fixed deadline
+        // shorter than that would abandon a healthy builder. The hard ceiling
+        // only backstops a hang that somehow keeps the lock fresh without
+        // finishing.
         const deadline = Date.now() + 1_800_000;
         while (Date.now() < deadline) {
             if (fs.existsSync(marker)) {
                 return profileDir;
             }
             if (!fs.existsSync(lockDir) || lockIsStale()) {
-                // The builder died (or stalled past the stale threshold) without
-                // producing a profile; take over.
                 fs.rmSync(lockDir, { recursive: true, force: true });
-                return buildWalletProfile(options);
+                return buildCachedProfile(options);
             }
             await sleep(250);
         }
-        throw new Error(`Timed out waiting for another process to finish building the wallet profile at ${profileDir}.`);
+        throw new Error(`Timed out waiting for another process to finish building the ${options.label} at ${profileDir}.`);
     }
-    // Builds with a customize hook can exceed the 5-minute stale-lock
-    // threshold; refresh the lock mtime so a waiting worker never steals it
-    // mid-build.
     const heartbeat = setInterval(() => {
         try {
             const now = new Date();
@@ -177,39 +186,7 @@ export async function buildWalletProfile(options) {
     try {
         fs.rmSync(profileDir, { recursive: true, force: true });
         fs.mkdirSync(profileDir, { recursive: true });
-        const onboardStartedAt = Date.now();
-        const session = await launchRealWallet({
-            extensionPath: options.extensionPath,
-            profileDir,
-            setup: options.setup,
-            headless: options.headless,
-            generation: options.generation,
-            // Verifying against the seed-derived address guarantees the build
-            // actually imported a wallet — a silently skipped onboarding would
-            // otherwise produce a cached profile with no vault.
-            expectedAddress: mnemonicToAccount(options.setup.seedPhrase).address,
-        });
-        // 13.x flushes extension state through a debounced write (safe-reload's
-        // OperationSafener, a 1000ms trailing-edge debounce around
-        // persistenceManager.set()); wait for the post-onboarding (and, when
-        // customizing, post-mutation) write to land and stay quiet before
-        // closing — a missed flush silently replays onboarding or loses the
-        // customization.
-        if (options.customize) {
-            const mutationsStartedAt = Date.now();
-            await options.customize.run(session);
-            await waitForExtensionStatePersisted(profileDir, session.extensionId, {
-                since: mutationsStartedAt,
-                timeoutMs: 20_000,
-            });
-        }
-        else {
-            await waitForExtensionStatePersisted(profileDir, session.extensionId, {
-                since: onboardStartedAt,
-                timeoutMs: 15_000,
-            });
-        }
-        await session.close();
+        await options.build(profileDir);
         fs.writeFileSync(marker, JSON.stringify({ createdAt: new Date().toISOString() }));
         return profileDir;
     }
@@ -221,6 +198,115 @@ export async function buildWalletProfile(options) {
         clearInterval(heartbeat);
         fs.rmSync(lockDir, { recursive: true, force: true });
     }
+};
+/**
+ * Builds (once) and returns a cached, fully onboarded MetaMask profile
+ * directory keyed by (seed phrase, password, extension version). The first
+ * call walks MetaMask onboarding in a real browser; subsequent calls return
+ * instantly. Use cloneWalletProfile to obtain a disposable per-test copy —
+ * never launch the cached directory directly.
+ */
+export async function buildWalletProfile(options) {
+    const seedPhrase = options.setup.seedPhrase;
+    if (!seedPhrase) {
+        throw new Error('buildWalletProfile requires setup.seedPhrase.');
+    }
+    return buildCachedProfile({
+        cacheDir: options.cacheDir,
+        cacheKey: cacheKey(options),
+        force: options.force,
+        label: 'wallet profile',
+        build: async (profileDir) => {
+            const onboardStartedAt = Date.now();
+            const session = await launchRealWallet({
+                extensionPath: options.extensionPath,
+                profileDir,
+                setup: options.setup,
+                headless: options.headless,
+                generation: options.generation,
+                // Verifying against the seed-derived address guarantees the build
+                // actually imported a wallet — a silently skipped onboarding would
+                // otherwise produce a cached profile with no vault.
+                expectedAddress: mnemonicToAccount(seedPhrase).address,
+            });
+            try {
+                // 13.x flushes extension state through a debounced write (safe-reload's
+                // OperationSafener, a 1000ms trailing-edge debounce around
+                // persistenceManager.set()); wait for the post-onboarding (and, when
+                // customizing, post-mutation) write to land and stay quiet before
+                // closing — a missed flush silently replays onboarding or loses the
+                // customization.
+                if (options.customize) {
+                    const mutationsStartedAt = Date.now();
+                    await options.customize.run(session);
+                    await waitForExtensionStatePersisted(profileDir, session.extensionId, {
+                        since: mutationsStartedAt,
+                        timeoutMs: 20_000,
+                    });
+                }
+                else {
+                    await waitForExtensionStatePersisted(profileDir, session.extensionId, {
+                        since: onboardStartedAt,
+                        timeoutMs: 15_000,
+                    });
+                }
+            }
+            finally {
+                await session.close();
+            }
+        },
+    });
+}
+/**
+ * Builds (once) and returns a cached profile for any unpacked Chromium wallet
+ * extension. The caller owns wallet-specific onboarding/unlock selectors in
+ * `setup.run`; this helper only supplies the persistent profile, extension
+ * launch, cache locking, ready marker, and optional extension-state flush.
+ * Use cloneWalletProfile to obtain disposable per-test copies.
+ */
+export async function buildWalletExtensionProfile(options) {
+    return buildCachedProfile({
+        cacheDir: options.cacheDir,
+        cacheKey: extensionProfileCacheKey(options),
+        force: options.force,
+        label: 'wallet extension profile',
+        build: async (profileDir) => {
+            const session = await launchRealWalletExtension({
+                baseURL: options.baseURL,
+                extensionId: options.extensionId,
+                extensionName: options.extensionName,
+                extensionPath: options.extensionPath,
+                headless: options.headless,
+                initialPage: options.initialPage,
+                launchArgs: options.launchArgs,
+                locale: options.locale,
+                profileDir,
+                slowMo: options.slowMo,
+            });
+            try {
+                if (options.setup) {
+                    const setupStartedAt = Date.now();
+                    await options.setup.run(session);
+                    const waitForState = options.waitForState ?? true;
+                    if (waitForState) {
+                        await waitForExtensionStatePersisted(profileDir, session.extensionId, {
+                            since: setupStartedAt,
+                            ...(typeof waitForState === 'object' ? waitForState : {}),
+                        });
+                    }
+                }
+                else if (options.waitForState && typeof options.waitForState === 'object') {
+                    await waitForExtensionStatePersisted(profileDir, session.extensionId, options.waitForState);
+                }
+                else if (options.waitForState === true) {
+                    await waitForExtensionStatePersisted(profileDir, session.extensionId);
+                }
+            }
+            finally {
+                await session.close();
+            }
+        },
+    });
 }
 /**
  * Copies a cached profile into a disposable directory (per test or per

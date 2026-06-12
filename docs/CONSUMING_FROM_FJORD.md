@@ -29,13 +29,18 @@ export default defineConfig({
     trace: 'on-first-retry',
   },
   projects: [
-    {
-      name: 'chromium',
-      use: { ...devices['Desktop Chrome'] },
-    },
+    { name: 'chromium', use: { ...devices['Desktop Chrome'] } },
+    { name: 'firefox', use: { ...devices['Desktop Firefox'] } },
+    { name: 'webkit', use: { ...devices['Desktop Safari'] } },
   ],
 });
 ```
+
+The injected local fixtures and live-key fixtures follow the current
+Playwright browser project, so this matrix exercises Chromium, Firefox, and
+WebKit. Put any `@marigoldlabs/web3-tester/real-wallet-fixtures` tests in a
+separate Chromium-only project; real Chrome extensions cannot run in Firefox
+or WebKit.
 
 ## Local Deterministic Tests
 

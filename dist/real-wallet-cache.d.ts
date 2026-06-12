@@ -1,3 +1,4 @@
+import { type RealWalletExtensionLaunchOptions, type RealWalletExtensionSession } from './real-wallet-extension.js';
 import { type RealWalletSession, type RealWalletSetup, type WalletGeneration } from './real-wallet.js';
 export type BuildWalletProfileOptions = {
     /** Unpacked MetaMask extension directory (see prepareMetaMaskExtension). */
@@ -34,6 +35,35 @@ export type BuildWalletProfileOptions = {
         run(session: RealWalletSession): Promise<void>;
     };
 };
+export type BuildWalletExtensionProfileOptions = Omit<RealWalletExtensionLaunchOptions, 'profileDir'> & {
+    /**
+     * User-controlled cache identity for the setup callback and any external
+     * wallet state it depends on (seed phrase, imported key, test account,
+     * network config, etc.). Bump this whenever setup changes.
+     */
+    cacheKey: string;
+    /** Directory cached profiles live in. Defaults to ~/.cache/web3-tester/profiles. */
+    cacheDir?: string;
+    /** Rebuild even if a cached profile exists. */
+    force?: boolean;
+    /**
+     * One-time extension setup baked into the cached profile. Use this to
+     * unlock/import/onboard Rabby, Coinbase Wallet, Phantom, or other
+     * non-MetaMask Chromium wallets with wallet-specific Playwright locators.
+     */
+    setup?: {
+        run(session: RealWalletExtensionSession): Promise<void>;
+    };
+    /**
+     * Wait for extension storage writes before closing. Defaults to true when
+     * setup is provided, false otherwise. Pass false for setup callbacks that do
+     * not mutate persisted extension state.
+     */
+    waitForState?: boolean | {
+        quietMs?: number;
+        timeoutMs?: number;
+    };
+};
 /**
  * Polls the profile's extension storage (IndexedDB leveldb + blob and Local
  * Extension Settings) from Node until a write newer than `since` lands and
@@ -56,6 +86,14 @@ export declare const defaultProfileCacheDir: () => string;
  * never launch the cached directory directly.
  */
 export declare function buildWalletProfile(options: BuildWalletProfileOptions): Promise<string>;
+/**
+ * Builds (once) and returns a cached profile for any unpacked Chromium wallet
+ * extension. The caller owns wallet-specific onboarding/unlock selectors in
+ * `setup.run`; this helper only supplies the persistent profile, extension
+ * launch, cache locking, ready marker, and optional extension-state flush.
+ * Use cloneWalletProfile to obtain disposable per-test copies.
+ */
+export declare function buildWalletExtensionProfile(options: BuildWalletExtensionProfileOptions): Promise<string>;
 /**
  * Copies a cached profile into a disposable directory (per test or per
  * worker) so parallel runs never collide on Chromium's profile singleton

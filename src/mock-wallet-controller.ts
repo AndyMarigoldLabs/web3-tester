@@ -1,6 +1,6 @@
 import type { Frame, Page } from '@playwright/test';
 import { randomBytes } from 'node:crypto';
-import { http, toHex, type Address, type Hex } from 'viem';
+import { http, isAddress, keccak256, toHex, type Address, type Hex } from 'viem';
 import { providerError, serializeRpcError } from './errors.js';
 import {
   buildInjectedProviderScript,
@@ -13,8 +13,14 @@ import type {
   JsonRpcResponseEnvelope,
   MockWalletConfig,
   RpcClient,
+  WalletProviderIdentity,
   WalletProviderInfo,
 } from './types.js';
+import {
+  createWalletPersona,
+  mockWalletPersona,
+  type WalletPersonaInput,
+} from './wallet-personas.js';
 
 export type RejectionRule = {
   methods?: readonly string[];
@@ -38,6 +44,17 @@ export type SentTransactionRecord = {
   value?: string;
 };
 
+export type WatchedAssetRecord = {
+  /** The wallet's active chain when the asset prompt was accepted. */
+  chainId: Hex;
+  /** EIP-747 asset type, usually ERC20. */
+  type?: string;
+  /** Wallet-visible asset options passed by the dapp. */
+  options?: Record<string, unknown>;
+  /** Original wallet_watchAsset request object passed by the dapp. */
+  request: unknown;
+};
+
 /** A chain backend: any RpcClient, or an http(s) RPC URL string. */
 export type ChainBackend = RpcClient | string;
 
@@ -52,6 +69,84 @@ export type Eip5792Options = {
   capabilities?: Record<Hex, Record<string, unknown>>;
   /** Batches with more calls throw 5740. Default: 100. */
   maxCallsPerBatch?: number;
+};
+
+export type HardwareWalletDeviceState =
+  | 'ready'
+  | 'locked'
+  | 'wrong-app'
+  | 'blind-signing-disabled'
+  | 'disconnected';
+
+export type HardwareWalletSimulationOptions = {
+  /**
+   * Enables deterministic hardware-wallet behavior. Passing an options object
+   * enables it unless `enabled: false` is set.
+   */
+  enabled?: boolean;
+  /** Delay after user approval while the request waits for device confirmation. */
+  approvalDelayMs?: number;
+  /** Device state to emulate. Non-ready states reject matching requests. */
+  deviceState?: HardwareWalletDeviceState;
+  /** Methods that require hardware confirmation. Defaults to signing/spend methods. */
+  methods?: readonly string[];
+  /**
+   * App name shown when `deviceState` is `wrong-app`. Defaults to the app
+   * inferred from the method, currently Ethereum for EVM methods and Solana
+   * for `solana_*` methods.
+   */
+  requiredApp?: string;
+  /** Method-specific app names for `wrong-app` errors. Overrides `requiredApp`. */
+  requiredApps?: Record<string, string>;
+};
+
+export type CoinbaseSpendPermission = {
+  account: Address;
+  spender: Address;
+  token: Address;
+  allowance: string;
+  period: number;
+  start: number;
+  end: number;
+  salt: string;
+  extraData: Hex;
+};
+
+export type CoinbasePermission = {
+  createdAt: number;
+  permissionHash: Hex;
+  signature: Hex;
+  spendPermission: CoinbaseSpendPermission;
+  /** Filtering metadata; omitted from RPC responses. Defaults to the active chain. */
+  chainId?: number | Hex | string;
+};
+
+export type CoinbaseSubAccount = {
+  address: Address;
+  factory?: Address;
+  factoryData?: Hex;
+  /** Filtering/return metadata. Defaults to the active chain. */
+  chainId?: number | Hex | string;
+  /** Optional owner account filter for wallet_getSubAccounts. */
+  account?: Address;
+  /** Optional dapp-domain filter for wallet_getSubAccounts. */
+  domain?: string;
+};
+
+export type CoinbaseWalletSimulationOptions = {
+  /**
+   * Enables Coinbase/Base Account RPC methods. Defaults to true when any
+   * configured persona has isCoinbaseWallet.
+   */
+  enabled?: boolean;
+  /** Seed spend permissions returned by coinbase_fetchPermission(s). */
+  permissions?: readonly CoinbasePermission[];
+  /** Seed sub-accounts returned by wallet_getSubAccounts. */
+  subAccounts?: readonly CoinbaseSubAccount[];
+  /** Default factory attached to generated sub-accounts. */
+  factory?: Address;
+  /** Default factoryData attached to generated sub-accounts. */
+  factoryData?: Hex;
 };
 
 export type CallsBatchRecord = {
@@ -82,6 +177,10 @@ export type HttpRpcClientOptions = {
   retryCount?: number;
 };
 
+type GenericRpcTransport = {
+  request(request: JsonRpcRequest): Promise<unknown>;
+};
+
 /**
  * Adapter: EIP-1193 RpcClient over a plain JSON-RPC URL (viem http
  * transport). URL-backed chains serve reads, eth_sendRawTransaction, and
@@ -94,8 +193,9 @@ export function httpRpcClient(url: string, options: HttpRpcClientOptions = {}): 
     retryCount: options.retryCount ?? 0,
     timeout: options.timeout,
   })({});
+  const rpcTransport = transport as unknown as GenericRpcTransport;
   return {
-    request: (request: JsonRpcRequest) => transport.request(request as never),
+    request: (request: JsonRpcRequest) => rpcTransport.request(request),
   };
 }
 
@@ -125,10 +225,39 @@ export type MockWalletControllerOptions = {
    * a legacy wallet that answers 4200.
    */
   eip5792?: boolean | Eip5792Options;
+  /** Primary wallet identity, including EIP-6963 metadata, provider flags, and global aliases. */
+  persona?: WalletPersonaInput;
+  /** Additional announced wallet identities. */
+  additionalPersonas?: readonly WalletPersonaInput[];
+  /**
+   * Deterministic Ledger/Trezor-style approval simulation. `true` enables
+   * the default ready device with a confirmation delay; an options object can
+   * model locked, wrong-app, blind-signing-disabled, and disconnected states.
+   */
+  hardwareWallet?: boolean | HardwareWalletSimulationOptions;
+  /**
+   * Coinbase/Base Account RPC simulation. Auto-enabled for Coinbase personas;
+   * pass false to make coinbase_* and Coinbase wallet_* methods unsupported.
+   */
+  coinbase?: boolean | CoinbaseWalletSimulationOptions;
+  /**
+   * Legacy shortcut for overriding primary EIP-6963 metadata. Prefer
+   * `persona` for wallet flags and aliases.
+   */
   providerInfo?: Partial<WalletProviderInfo>;
+  /**
+   * Legacy shortcut for extra EIP-6963-only providers. Prefer
+   * `additionalPersonas` for wallet flags and aliases.
+   */
   additionalProviders?: readonly Partial<WalletProviderInfo>[];
   autoApprove?: boolean;
   connected?: boolean;
+  /**
+   * Software wallet lock state exposed through `_metamask.isUnlocked()` and
+   * `metamask_getProviderState`. Locked wallets keep chain connectivity but
+   * hide accounts and reject approval-gated account/sign/spend requests.
+   */
+  unlocked?: boolean;
   /**
    * When set, only frames whose origin matches an entry (URL or origin
    * string) can reach the wallet; everything else gets a 4100 error. Leave
@@ -144,12 +273,14 @@ const DEFAULT_PROVIDER_INFO: WalletProviderInfo = {
     'data:image/svg+xml,<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64"><rect width="64" height="64" rx="14" fill="%23111827"/><path d="M17 34h30v14H17z" fill="%2338bdf8"/><path d="M20 18h24v16H20z" fill="%23f59e0b"/><circle cx="43" cy="41" r="3" fill="%23111827"/></svg>',
   rdns: 'dev.invisible-wallet.mock',
 };
+const DEFAULT_SOLANA_PUBLIC_KEY = '26qv4GCcx98RihuK3c4T6ozB3J7L6VwCuFVc7Ta2A3Uo';
 
-const defaultAdditionalProviderInfo = (index: number): WalletProviderInfo => ({
+const defaultAdditionalProviderInfo = (index: number): WalletProviderIdentity => ({
   uuid: `00000000-0000-4000-8000-${String(index + 2).padStart(12, '0')}`,
   name: `Mock Wallet ${index + 2}`,
   icon: DEFAULT_PROVIDER_INFO.icon,
   rdns: `dev.invisible-wallet.mock.${index + 2}`,
+  flags: { isMetaMask: true, isMock: true },
 });
 
 const SIGNING_METHODS = new Set([
@@ -159,6 +290,12 @@ const SIGNING_METHODS = new Set([
   'eth_signTypedData_v3',
   'eth_signTypedData_v4',
   'personal_sign',
+  'solana_signIn',
+  'solana_signAllTransactions',
+  'solana_signAndSendAllTransactions',
+  'solana_signAndSendTransaction',
+  'solana_signMessage',
+  'solana_signTransaction',
   // A batch is a spend: 4100 while disconnected, approval-gated, covered by
   // the default simulateRejection() set.
   'wallet_sendCalls',
@@ -166,10 +303,14 @@ const SIGNING_METHODS = new Set([
 
 // Methods that open a wallet prompt in a real wallet but do not sign.
 const PROMPT_METHODS = new Set([
+  'coinbase_fetchPermissions',
+  'wallet_addSubAccount',
   'wallet_addEthereumChain',
+  'wallet_connect',
   'wallet_requestPermissions',
   'wallet_switchEthereumChain',
   'wallet_watchAsset',
+  'solana_requestAccounts',
 ]);
 
 const APPROVAL_GATED_METHODS = new Set([
@@ -180,6 +321,78 @@ const APPROVAL_GATED_METHODS = new Set([
   // approve, and it must not slip through the unguarded default forward.
   'eth_sendRawTransaction',
 ]);
+
+const UNLOCK_REQUIRED_METHODS = new Set([
+  ...APPROVAL_GATED_METHODS,
+  'coinbase_fetchPermission',
+  'wallet_getSubAccounts',
+  'wallet_getCapabilities',
+]);
+
+type ResolvedHardwareWalletSimulation = {
+  enabled: boolean;
+  approvalDelayMs: number;
+  deviceState: HardwareWalletDeviceState;
+  methods: readonly string[];
+  requiredApp?: string;
+  requiredApps: Record<string, string>;
+};
+
+type StoredCoinbasePermission = Omit<CoinbasePermission, 'chainId'> & { chainId: Hex };
+
+type StoredCoinbaseSubAccount = Omit<CoinbaseSubAccount, 'chainId' | 'account'> & {
+  chainId: Hex;
+  account: Address;
+};
+
+type ResolvedCoinbaseWalletSimulation = {
+  enabled: boolean;
+  permissions: StoredCoinbasePermission[];
+  subAccounts: StoredCoinbaseSubAccount[];
+  factory?: Address;
+  factoryData?: Hex;
+};
+
+const HARDWARE_WALLET_DEFAULT_DELAY_MS = 750;
+
+const wait = (ms: number): Promise<void> =>
+  new Promise((resolve) => setTimeout(resolve, ms));
+
+const inferHardwareWalletRequiredApp = (method: string): string =>
+  method.startsWith('solana_') ? 'Solana' : 'Ethereum';
+
+const hardwareWalletRequiredApp = (
+  method: string,
+  hardwareWallet: ResolvedHardwareWalletSimulation,
+): string =>
+  hardwareWallet.requiredApps[method] ??
+  hardwareWallet.requiredApp ??
+  inferHardwareWalletRequiredApp(method);
+
+const normalizeHardwareWalletSimulation = (
+  options: boolean | HardwareWalletSimulationOptions | undefined,
+): ResolvedHardwareWalletSimulation => {
+  const input =
+    options === true
+      ? { enabled: true }
+      : options === false || options === undefined
+        ? { enabled: false }
+        : options;
+  const approvalDelayMs = input.approvalDelayMs ?? HARDWARE_WALLET_DEFAULT_DELAY_MS;
+
+  if (!Number.isFinite(approvalDelayMs) || approvalDelayMs < 0) {
+    throw new Error('hardwareWallet.approvalDelayMs must be a non-negative finite number.');
+  }
+
+  return {
+    enabled: input.enabled ?? (options !== undefined),
+    approvalDelayMs,
+    deviceState: input.deviceState ?? 'ready',
+    methods: [...(input.methods ?? SIGNING_METHODS)],
+    requiredApp: input.requiredApp,
+    requiredApps: { ...(input.requiredApps ?? {}) },
+  };
+};
 
 const normalizeParams = (params: JsonRpcParams): unknown[] => {
   if (params === undefined) {
@@ -213,6 +426,219 @@ const parseDappChainId = (chainId: unknown): Hex => {
   } catch {
     throw providerError(-32602, `Invalid chainId "${chainId}".`);
   }
+};
+
+const parseCoinbaseChainId = (chainId: unknown, label = 'chainId'): Hex => {
+  if (typeof chainId === 'number' && Number.isSafeInteger(chainId) && chainId >= 0) {
+    return toHex(chainId);
+  }
+  if (typeof chainId === 'string' && chainId.startsWith('0x')) {
+    return parseDappChainId(chainId);
+  }
+  throw providerError(-32602, `${label} must be a hexadecimal string or non-negative integer.`);
+};
+
+const isRecord = (value: unknown): value is Record<string, unknown> =>
+  value !== null && typeof value === 'object' && !Array.isArray(value);
+
+const assertRpcAddress = (value: unknown, label: string): Address => {
+  if (typeof value === 'string' && isAddress(value)) {
+    return value as Address;
+  }
+  throw providerError(-32602, `${label} must be a valid address.`);
+};
+
+const assertRpcHex = (value: unknown, label: string, options: { allowEmpty?: boolean } = {}): Hex => {
+  const pattern = options.allowEmpty ? /^0x[0-9a-fA-F]*$/ : /^0x[0-9a-fA-F]+$/;
+  if (typeof value === 'string' && pattern.test(value)) {
+    return value as Hex;
+  }
+  throw providerError(-32602, `${label} must be a 0x-prefixed hex string.`);
+};
+
+const assertRpcHash = (value: unknown, label: string): Hex => {
+  if (typeof value === 'string' && /^0x[0-9a-fA-F]{64}$/.test(value)) {
+    return value as Hex;
+  }
+  throw providerError(-32602, `${label} must be a 32-byte 0x-prefixed hex string.`);
+};
+
+const assertRpcObject = (value: unknown, method: string): Record<string, unknown> => {
+  if (isRecord(value)) {
+    return value;
+  }
+  throw providerError(-32602, `${method} requires an object parameter.`);
+};
+
+const requireConfigAddress = (value: unknown, label: string): Address => {
+  if (typeof value === 'string' && isAddress(value)) {
+    return value as Address;
+  }
+  throw new Error(`${label} must be a valid address.`);
+};
+
+const requireConfigHex = (
+  value: unknown,
+  label: string,
+  options: { allowEmpty?: boolean; hash?: boolean } = {},
+): Hex => {
+  const pattern = options.hash
+    ? /^0x[0-9a-fA-F]{64}$/
+    : options.allowEmpty
+      ? /^0x[0-9a-fA-F]*$/
+      : /^0x[0-9a-fA-F]+$/;
+  if (typeof value === 'string' && pattern.test(value)) {
+    return value as Hex;
+  }
+  throw new Error(`${label} must be a ${options.hash ? '32-byte ' : ''}0x-prefixed hex string.`);
+};
+
+const requireFiniteNumber = (value: unknown, label: string): number => {
+  if (typeof value === 'number' && Number.isFinite(value)) {
+    return value;
+  }
+  throw new Error(`${label} must be a finite number.`);
+};
+
+const requireConfigString = (value: unknown, label: string): string => {
+  if (typeof value === 'string') {
+    return value;
+  }
+  throw new Error(`${label} must be a string.`);
+};
+
+const sameAddress = (left: Address, right: Address): boolean =>
+  left.toLowerCase() === right.toLowerCase();
+
+const cloneCoinbasePermission = (permission: StoredCoinbasePermission): CoinbasePermission => ({
+  createdAt: permission.createdAt,
+  permissionHash: permission.permissionHash,
+  signature: permission.signature,
+  spendPermission: { ...permission.spendPermission },
+});
+
+const cloneCoinbaseSubAccount = (
+  subAccount: StoredCoinbaseSubAccount,
+): Pick<CoinbaseSubAccount, 'address' | 'factory' | 'factoryData'> => ({
+  address: subAccount.address,
+  ...(subAccount.factory ? { factory: subAccount.factory } : {}),
+  ...(subAccount.factoryData ? { factoryData: subAccount.factoryData } : {}),
+});
+
+const normalizeCoinbasePermission = (
+  permission: CoinbasePermission,
+  defaultChainId: Hex,
+): StoredCoinbasePermission => ({
+  createdAt: requireFiniteNumber(permission.createdAt, 'coinbase.permissions[].createdAt'),
+  permissionHash: requireConfigHex(
+    permission.permissionHash,
+    'coinbase.permissions[].permissionHash',
+    { hash: true },
+  ),
+  signature: requireConfigHex(permission.signature, 'coinbase.permissions[].signature'),
+  chainId: permission.chainId === undefined ? defaultChainId : normalizeChainId(permission.chainId),
+  spendPermission: {
+    account: requireConfigAddress(
+      permission.spendPermission?.account,
+      'coinbase.permissions[].spendPermission.account',
+    ),
+    spender: requireConfigAddress(
+      permission.spendPermission?.spender,
+      'coinbase.permissions[].spendPermission.spender',
+    ),
+    token: requireConfigAddress(
+      permission.spendPermission?.token,
+      'coinbase.permissions[].spendPermission.token',
+    ),
+    allowance: requireConfigString(
+      permission.spendPermission?.allowance,
+      'coinbase.permissions[].spendPermission.allowance',
+    ),
+    period: requireFiniteNumber(
+      permission.spendPermission?.period,
+      'coinbase.permissions[].spendPermission.period',
+    ),
+    start: requireFiniteNumber(
+      permission.spendPermission?.start,
+      'coinbase.permissions[].spendPermission.start',
+    ),
+    end: requireFiniteNumber(
+      permission.spendPermission?.end,
+      'coinbase.permissions[].spendPermission.end',
+    ),
+    salt: requireConfigString(
+      permission.spendPermission?.salt,
+      'coinbase.permissions[].spendPermission.salt',
+    ),
+    extraData: requireConfigHex(
+      permission.spendPermission?.extraData,
+      'coinbase.permissions[].spendPermission.extraData',
+      { allowEmpty: true },
+    ),
+  },
+});
+
+const normalizeCoinbaseSubAccount = (
+  subAccount: CoinbaseSubAccount,
+  defaultChainId: Hex,
+  defaultAccount: Address,
+): StoredCoinbaseSubAccount => ({
+  address: requireConfigAddress(subAccount.address, 'coinbase.subAccounts[].address'),
+  chainId: subAccount.chainId === undefined ? defaultChainId : normalizeChainId(subAccount.chainId),
+  account:
+    subAccount.account === undefined
+      ? defaultAccount
+      : requireConfigAddress(subAccount.account, 'coinbase.subAccounts[].account'),
+  ...(subAccount.domain ? { domain: subAccount.domain } : {}),
+  ...(subAccount.factory
+    ? { factory: requireConfigAddress(subAccount.factory, 'coinbase.subAccounts[].factory') }
+    : {}),
+  ...(subAccount.factoryData
+    ? {
+        factoryData: requireConfigHex(
+          subAccount.factoryData,
+          'coinbase.subAccounts[].factoryData',
+          { allowEmpty: true },
+        ),
+      }
+    : {}),
+});
+
+const normalizeCoinbaseWalletSimulation = (
+  options: boolean | CoinbaseWalletSimulationOptions | undefined,
+  defaultEnabled: boolean,
+  defaultChainId: Hex,
+  defaultAccount: Address,
+): ResolvedCoinbaseWalletSimulation => {
+  if (options === false) {
+    return { enabled: false, permissions: [], subAccounts: [] };
+  }
+  const input = options === true ? { enabled: true } : (options ?? {});
+  return {
+    enabled: input.enabled ?? (options === undefined ? defaultEnabled : true),
+    permissions: [...(input.permissions ?? [])].map((permission) =>
+      normalizeCoinbasePermission(permission, defaultChainId),
+    ),
+    subAccounts: [...(input.subAccounts ?? [])].map((subAccount) =>
+      normalizeCoinbaseSubAccount(subAccount, defaultChainId, defaultAccount),
+    ),
+    ...(input.factory
+      ? { factory: requireConfigAddress(input.factory, 'coinbase.factory') }
+      : {}),
+    ...(input.factoryData
+      ? { factoryData: requireConfigHex(input.factoryData, 'coinbase.factoryData', { allowEmpty: true }) }
+      : {}),
+  };
+};
+
+const generatedSubAccountAddress = (
+  owner: Address,
+  chainId: Hex,
+  index: number,
+  accountConfig: Record<string, unknown>,
+): Address => {
+  const seed = JSON.stringify({ owner: owner.toLowerCase(), chainId, index, accountConfig });
+  return `0x${keccak256(toHex(seed)).slice(-40)}` as Address;
 };
 
 // Bounded eth_chainId probe used when trustDappRpcUrls wires up a
@@ -273,7 +699,10 @@ export class MockWalletController {
   private accounts: Address[];
   private chainId: Hex;
   private connected: boolean;
+  private unlocked: boolean;
   private approveRequests: boolean;
+  private hardwareWallet: ResolvedHardwareWalletSimulation;
+  private coinbase: ResolvedCoinbaseWalletSimulation;
   private rejectionQueue: RejectionRule[] = [];
   private holdQueue: HoldRule[] = [];
   private approvalQueue: ApprovalRule[] = [];
@@ -302,6 +731,7 @@ export class MockWalletController {
 
   readonly sentTransactions: Hex[] = [];
   readonly sentTransactionRequests: SentTransactionRecord[] = [];
+  readonly watchedAssets: WatchedAssetRecord[] = [];
 
   constructor(
     private readonly page: Page,
@@ -311,7 +741,9 @@ export class MockWalletController {
     this.accounts = [...options.accounts];
     this.chainId = normalizeChainId(options.chainId);
     this.connected = options.connected ?? true;
+    this.unlocked = options.unlocked ?? true;
     this.approveRequests = options.autoApprove ?? true;
+    this.hardwareWallet = normalizeHardwareWalletSimulation(options.hardwareWallet);
     this.trustDappRpcUrls = options.trustDappRpcUrls ?? false;
     const eip5792 = typeof options.eip5792 === 'boolean' ? { enabled: options.eip5792 } : (options.eip5792 ?? {});
     this.eip5792 = {
@@ -358,24 +790,39 @@ export class MockWalletController {
       throw new Error('MockWalletController requires at least one account.');
     }
 
-    const primaryProviderInfo = {
-      ...DEFAULT_PROVIDER_INFO,
+    const primaryProviderInfo = createWalletPersona({
+      ...mockWalletPersona(),
+      ...options.persona,
       ...options.providerInfo,
-    };
+    });
 
     this.providerInfos = [
       primaryProviderInfo,
-      ...(options.additionalProviders ?? []).map((provider, index) => ({
-        ...defaultAdditionalProviderInfo(index),
-        ...provider,
-      })),
+      ...(options.additionalProviders ?? []).map((provider, index) =>
+        createWalletPersona({
+          ...defaultAdditionalProviderInfo(index),
+          ...provider,
+        }),
+      ),
+      ...(options.additionalPersonas ?? []).map((provider, index) =>
+        createWalletPersona({
+          ...defaultAdditionalProviderInfo(index + (options.additionalProviders?.length ?? 0)),
+          ...provider,
+        }),
+      ),
     ];
 
     this.providerInfo = primaryProviderInfo;
+    this.coinbase = normalizeCoinbaseWalletSimulation(
+      options.coinbase,
+      this.providerInfos.some((provider) => provider.flags?.isCoinbaseWallet === true),
+      this.chainId,
+      this.primaryAccount,
+    );
   }
 
   readonly providerInfo: WalletProviderInfo;
-  readonly providerInfos: readonly WalletProviderInfo[];
+  readonly providerInfos: readonly WalletProviderIdentity[];
 
   get primaryAccount(): Address {
     return this.accounts[0]!;
@@ -393,6 +840,40 @@ export class MockWalletController {
   /** Chain ids that currently have an RPC backend, canonical hex. */
   get backedChainIds(): readonly Hex[] {
     return [...this.chainBackends.keys()];
+  }
+
+  get coinbasePermissions(): readonly CoinbasePermission[] {
+    return this.coinbase.permissions.map(cloneCoinbasePermission);
+  }
+
+  get coinbaseSubAccounts(): readonly CoinbaseSubAccount[] {
+    return this.coinbase.subAccounts.map((subAccount) => ({
+      ...cloneCoinbaseSubAccount(subAccount),
+      chainId: subAccount.chainId,
+      account: subAccount.account,
+      ...(subAccount.domain ? { domain: subAccount.domain } : {}),
+    }));
+  }
+
+  get solanaAccounts(): readonly { publicKey: string; pubkey: string; address: string }[] {
+    if (!this.connected || !this.unlocked) {
+      return [];
+    }
+
+    const seen = new Set<string>();
+    const accounts: { publicKey: string; pubkey: string; address: string }[] = [];
+    for (const provider of this.providerInfos) {
+      if (!provider.solana) {
+        continue;
+      }
+      const publicKey = provider.solana.publicKey ?? DEFAULT_SOLANA_PUBLIC_KEY;
+      if (seen.has(publicKey)) {
+        continue;
+      }
+      seen.add(publicKey);
+      accounts.push({ publicKey, pubkey: publicKey, address: publicKey });
+    }
+    return accounts;
   }
 
   /**
@@ -482,6 +963,7 @@ export class MockWalletController {
       autoApprove: this.approveRequests,
       chainId: this.chainId,
       connected: this.connected,
+      unlocked: this.unlocked,
       providers: this.providerInfos,
       allowedOrigins: this.allowedOrigins,
     };
@@ -495,6 +977,34 @@ export class MockWalletController {
 
   autoApprove(enabled = true): void {
     this.approveRequests = enabled;
+  }
+
+  configureHardwareWallet(options: boolean | HardwareWalletSimulationOptions): void {
+    this.hardwareWallet = normalizeHardwareWalletSimulation(options);
+  }
+
+  configureCoinbaseWallet(options: boolean | CoinbaseWalletSimulationOptions): void {
+    this.coinbase = normalizeCoinbaseWalletSimulation(
+      options,
+      this.coinbase.enabled,
+      this.chainId,
+      this.primaryAccount,
+    );
+  }
+
+  setHardwareWalletState(state: HardwareWalletDeviceState): void {
+    this.hardwareWallet = {
+      ...this.hardwareWallet,
+      enabled: true,
+      deviceState: state,
+    };
+  }
+
+  setHardwareWalletApprovalDelay(approvalDelayMs: number): void {
+    this.hardwareWallet = normalizeHardwareWalletSimulation({
+      ...this.hardwareWallet,
+      approvalDelayMs,
+    });
   }
 
   /**
@@ -580,6 +1090,27 @@ export class MockWalletController {
   }
 
   /**
+   * Resolves with the next approved wallet_watchAsset request after this
+   * call. Invoke before triggering the dapp action, then await it.
+   */
+  async waitForNextWatchedAsset(
+    options: { timeoutMs?: number } = {},
+  ): Promise<WatchedAssetRecord> {
+    const timeoutMs = options.timeoutMs ?? 15_000;
+    const baseline = this.watchedAssets.length;
+    const deadline = Date.now() + timeoutMs;
+
+    while (Date.now() < deadline) {
+      if (this.watchedAssets.length > baseline) {
+        return this.watchedAssets[baseline]!;
+      }
+      await new Promise((resolve) => setTimeout(resolve, 50));
+    }
+
+    throw new Error(`Timed out after ${timeoutMs}ms waiting for the page to watch an asset.`);
+  }
+
+  /**
    * Replaces the account set (and reconnects a disconnected wallet — unlike
    * switchAccount, which only reorders). Accounts are validated against the
    * backing node's eth_accounts; pass { allowUnknownAccounts: true } only
@@ -599,7 +1130,7 @@ export class MockWalletController {
 
     this.accounts = [...accounts];
     this.connected = true;
-    await this.emit('accountsChanged', this.accounts);
+    await this.emit('accountsChanged', this.unlocked ? this.accounts : []);
   }
 
   /**
@@ -624,9 +1155,32 @@ export class MockWalletController {
 
     const [selected] = this.accounts.splice(index, 1);
     this.accounts.unshift(selected!);
-    if (this.connected) {
+    if (this.connected && this.unlocked) {
       await this.emit('accountsChanged', this.accounts);
     }
+  }
+
+  get isUnlocked(): boolean {
+    return this.unlocked;
+  }
+
+  async setUnlocked(unlocked: boolean): Promise<void> {
+    if (this.unlocked === unlocked) {
+      return;
+    }
+
+    this.unlocked = unlocked;
+    if (this.connected) {
+      await this.emit('accountsChanged', unlocked ? this.accounts : []);
+    }
+  }
+
+  async lock(): Promise<void> {
+    await this.setUnlocked(false);
+  }
+
+  async unlock(): Promise<void> {
+    await this.setUnlocked(true);
   }
 
   async disconnect(): Promise<void> {
@@ -638,7 +1192,7 @@ export class MockWalletController {
   async reconnect(): Promise<void> {
     this.connected = true;
     await this.emit('connect', { chainId: this.chainId });
-    await this.emit('accountsChanged', this.accounts);
+    await this.emit('accountsChanged', this.unlocked ? this.accounts : []);
   }
 
   async switchNetwork(chainId: number | Hex): Promise<void> {
@@ -1088,6 +1642,34 @@ export class MockWalletController {
     }
   }
 
+  private async assertHardwareWalletReady(method: string): Promise<void> {
+    if (!this.hardwareWallet.enabled || !this.hardwareWallet.methods.includes(method)) {
+      return;
+    }
+
+    switch (this.hardwareWallet.deviceState) {
+      case 'ready':
+        if (this.hardwareWallet.approvalDelayMs > 0) {
+          await wait(this.hardwareWallet.approvalDelayMs);
+        }
+        return;
+      case 'locked':
+        throw providerError(4001, 'Hardware wallet is locked. Unlock the device and try again.');
+      case 'wrong-app':
+        throw providerError(
+          4001,
+          `Open the ${hardwareWalletRequiredApp(method, this.hardwareWallet)} app on your hardware wallet and try again.`,
+        );
+      case 'blind-signing-disabled':
+        throw providerError(
+          4001,
+          'Blind signing is disabled on your hardware wallet.',
+        );
+      case 'disconnected':
+        throw providerError(4900, 'Hardware wallet disconnected.');
+    }
+  }
+
   private async assertUserApproved(method: string, params: readonly unknown[]): Promise<void> {
     const hold = this.consumeRule(this.holdQueue, method);
     if (hold) {
@@ -1109,12 +1691,11 @@ export class MockWalletController {
     );
     if (armedIndex !== -1) {
       this.approvalQueue.splice(armedIndex, 1);
-      return;
-    }
-
-    if (!this.approveRequests && APPROVAL_GATED_METHODS.has(method)) {
+    } else if (!this.approveRequests && APPROVAL_GATED_METHODS.has(method)) {
       throw providerError(4001, 'User rejected the request.');
     }
+
+    await this.assertHardwareWalletReady(method);
   }
 
   private permissionResponse() {
@@ -1126,9 +1707,379 @@ export class MockWalletController {
     ];
   }
 
+  private requestedPermissionKeys(
+    params: readonly unknown[],
+    method: 'wallet_requestPermissions' | 'wallet_revokePermissions',
+  ): string[] {
+    if (params.length === 0 || params[0] === undefined) {
+      return ['eth_accounts'];
+    }
+
+    const request = assertRpcObject(params[0], method);
+    const keys = Object.keys(request);
+    if (keys.length === 0) {
+      throw providerError(-32602, `${method} requires at least one permission.`);
+    }
+    return keys;
+  }
+
+  private assertSupportedPermissions(
+    params: readonly unknown[],
+    method: 'wallet_requestPermissions' | 'wallet_revokePermissions',
+  ): void {
+    const unsupported = this.requestedPermissionKeys(params, method).filter(
+      (permission) => permission !== 'eth_accounts',
+    );
+    if (unsupported.length > 0) {
+      throw providerError(
+        4200,
+        `The mock wallet does not support permission "${unsupported[0]}".`,
+      );
+    }
+  }
+
+  private async handleRequestPermissions(params: readonly unknown[]) {
+    this.assertSupportedPermissions(params, 'wallet_requestPermissions');
+    await this.assertUserApproved('wallet_requestPermissions', params);
+    const wasConnected = this.connected;
+    this.connected = true;
+    if (!wasConnected) {
+      await this.emit('connect', { chainId: this.chainId });
+    }
+    await this.emit('accountsChanged', this.accounts);
+    return this.permissionResponse();
+  }
+
+  private async handleRevokePermissions(params: readonly unknown[]): Promise<null> {
+    this.assertSupportedPermissions(params, 'wallet_revokePermissions');
+    this.connected = false;
+    await this.emit('accountsChanged', []);
+    return null;
+  }
+
+  private assertCoinbaseEnabled(method: string): void {
+    if (!this.coinbase.enabled) {
+      throw providerError(4200, `The mock wallet does not support the method "${method}".`);
+    }
+  }
+
+  private assertCoinbaseConnected(): void {
+    if (!this.connected) {
+      throw providerError(
+        4100,
+        'The requested account and/or method has not been authorized by the user.',
+      );
+    }
+  }
+
+  private assertAuthorizedAccount(account: Address): void {
+    if (!this.accounts.some((authorized) => sameAddress(authorized, account))) {
+      throw providerError(
+        4100,
+        `The requested account ${account} has not been authorized by the user.`,
+      );
+    }
+  }
+
+  private async buildCoinbaseSiweCapability(
+    capability: unknown,
+  ): Promise<{ message: string; signature: Hex }> {
+    const config = assertRpcObject(capability, 'wallet_connect signInWithEthereum');
+    const nonce = config.nonce;
+    if (typeof nonce !== 'string' || nonce.length === 0) {
+      throw providerError(-32602, 'signInWithEthereum.nonce must be a non-empty string.');
+    }
+    const chainId = parseCoinbaseChainId(config.chainId, 'signInWithEthereum.chainId');
+    if (chainId !== this.chainId) {
+      throw providerError(
+        -32602,
+        `signInWithEthereum.chainId ${chainId} does not match the active chain ${this.chainId}.`,
+      );
+    }
+
+    const domain =
+      typeof config.domain === 'string' && config.domain.length > 0
+        ? config.domain
+        : 'web3-tester.local';
+    const uri =
+      typeof config.uri === 'string' && config.uri.length > 0
+        ? config.uri
+        : `https://${domain}`;
+    const statement =
+      typeof config.statement === 'string' && config.statement.length > 0
+        ? config.statement
+        : 'Sign in with Coinbase Wallet.';
+    const resources = Array.isArray(config.resources)
+      ? config.resources.filter((resource): resource is string => typeof resource === 'string')
+      : [];
+
+    const messageLines = [
+      `${domain} wants you to sign in with your Ethereum account:`,
+      this.primaryAccount,
+      '',
+      statement,
+      '',
+      `URI: ${uri}`,
+      'Version: 1',
+      `Chain ID: ${Number(BigInt(chainId))}`,
+      `Nonce: ${nonce}`,
+      'Issued At: 1970-01-01T00:00:00.000Z',
+    ];
+    if (resources.length > 0) {
+      messageLines.push('Resources:', ...resources.map((resource) => `- ${resource}`));
+    }
+    const message = messageLines.join('\n');
+    const signature = (await this.activeRpcClient.request({
+      method: 'personal_sign',
+      params: [toHex(message), this.primaryAccount],
+    })) as Hex;
+
+    return { message, signature };
+  }
+
+  private async handleWalletConnect(params: readonly unknown[]): Promise<Record<string, unknown>> {
+    this.assertCoinbaseEnabled('wallet_connect');
+    const request = params[0] === undefined ? {} : assertRpcObject(params[0], 'wallet_connect');
+
+    await this.assertUserApproved('wallet_connect', params);
+    if (!this.connected) {
+      this.connected = true;
+      await this.emit('connect', { chainId: this.chainId });
+      await this.emit('accountsChanged', this.accounts);
+    }
+
+    const capabilities = isRecord(request.capabilities) ? request.capabilities : undefined;
+    const result: Record<string, unknown> = {
+      accounts: this.accounts.map((address) => ({ address })),
+      chainId: this.chainId,
+      isConnected: true,
+    };
+
+    if (capabilities?.signInWithEthereum !== undefined) {
+      result.capabilities = {
+        signInWithEthereum: await this.buildCoinbaseSiweCapability(
+          capabilities.signInWithEthereum,
+        ),
+      };
+    }
+
+    return result;
+  }
+
+  private handleWalletGetSubAccounts(params: readonly unknown[]): Record<string, unknown> {
+    this.assertCoinbaseEnabled('wallet_getSubAccounts');
+    this.assertCoinbaseConnected();
+    const request = assertRpcObject(params[0], 'wallet_getSubAccounts');
+    const account = assertRpcAddress(request.account, 'wallet_getSubAccounts.account');
+    this.assertAuthorizedAccount(account);
+    if (typeof request.domain !== 'string' || request.domain.length === 0) {
+      throw providerError(-32602, 'wallet_getSubAccounts.domain must be a non-empty string.');
+    }
+
+    const subAccounts = this.coinbase.subAccounts
+      .filter(
+        (subAccount) =>
+          subAccount.chainId === this.chainId &&
+          sameAddress(subAccount.account, account) &&
+          subAccount.domain === request.domain,
+      )
+      .map(cloneCoinbaseSubAccount);
+
+    return { subAccounts };
+  }
+
+  private async handleWalletAddSubAccount(
+    params: readonly unknown[],
+  ): Promise<Record<string, unknown>> {
+    this.assertCoinbaseEnabled('wallet_addSubAccount');
+    this.assertCoinbaseConnected();
+    const request = assertRpcObject(params[0], 'wallet_addSubAccount');
+    const accountConfig = assertRpcObject(request.account, 'wallet_addSubAccount.account');
+    const type = accountConfig.type;
+    if (type !== 'create' && type !== 'deployed') {
+      throw providerError(-32602, 'wallet_addSubAccount.account.type must be "create" or "deployed".');
+    }
+    if (request.domain !== undefined && typeof request.domain !== 'string') {
+      throw providerError(-32602, 'wallet_addSubAccount.domain must be a string when provided.');
+    }
+
+    let chainId = this.chainId;
+    let address: Address;
+    if (type === 'deployed') {
+      address = assertRpcAddress(accountConfig.address, 'wallet_addSubAccount.account.address');
+      chainId = parseCoinbaseChainId(
+        accountConfig.chainId,
+        'wallet_addSubAccount.account.chainId',
+      );
+    } else {
+      if (!Array.isArray(accountConfig.keys) || accountConfig.keys.length === 0) {
+        throw providerError(-32602, 'wallet_addSubAccount.account.keys must be a non-empty array.');
+      }
+      for (const key of accountConfig.keys) {
+        if (!isRecord(key) || typeof key.type !== 'string' || typeof key.publicKey !== 'string') {
+          throw providerError(
+            -32602,
+            'wallet_addSubAccount.account.keys entries require type and publicKey strings.',
+          );
+        }
+      }
+      address =
+        typeof accountConfig.address === 'string' && isAddress(accountConfig.address)
+          ? (accountConfig.address as Address)
+          : generatedSubAccountAddress(
+              this.primaryAccount,
+              chainId,
+              this.coinbase.subAccounts.length,
+              accountConfig,
+            );
+    }
+
+    const factory =
+      request.factory !== undefined
+        ? assertRpcAddress(request.factory, 'wallet_addSubAccount.factory')
+        : accountConfig.factory !== undefined
+          ? assertRpcAddress(accountConfig.factory, 'wallet_addSubAccount.account.factory')
+          : this.coinbase.factory;
+    const factoryData =
+      request.factoryData !== undefined
+        ? assertRpcHex(request.factoryData, 'wallet_addSubAccount.factoryData', { allowEmpty: true })
+        : accountConfig.factoryData !== undefined
+          ? assertRpcHex(accountConfig.factoryData, 'wallet_addSubAccount.account.factoryData', {
+              allowEmpty: true,
+            })
+          : this.coinbase.factoryData;
+
+    await this.assertUserApproved('wallet_addSubAccount', params);
+
+    const subAccount: StoredCoinbaseSubAccount = {
+      address,
+      chainId,
+      account: this.primaryAccount,
+      ...(typeof request.domain === 'string' ? { domain: request.domain } : {}),
+      ...(factory ? { factory } : {}),
+      ...(factoryData ? { factoryData } : {}),
+    };
+    this.coinbase.subAccounts.push(subAccount);
+
+    return {
+      address,
+      chainId,
+      ...(factory ? { factory } : {}),
+      ...(factoryData ? { factoryData } : {}),
+    };
+  }
+
+  private async handleCoinbaseFetchPermissions(
+    params: readonly unknown[],
+  ): Promise<Record<string, unknown>> {
+    this.assertCoinbaseEnabled('coinbase_fetchPermissions');
+    this.assertCoinbaseConnected();
+    const request = assertRpcObject(params[0], 'coinbase_fetchPermissions');
+    const spender = assertRpcAddress(request.spender, 'coinbase_fetchPermissions.spender');
+    const chainId = parseDappChainId(request.chainId);
+    const account =
+      request.account === undefined
+        ? undefined
+        : assertRpcAddress(request.account, 'coinbase_fetchPermissions.account');
+    if (account) {
+      this.assertAuthorizedAccount(account);
+    }
+    const pageOptions =
+      request.pageOptions === undefined
+        ? {}
+        : assertRpcObject(request.pageOptions, 'coinbase_fetchPermissions.pageOptions');
+    const pageSize =
+      typeof pageOptions.pageSize === 'number' && Number.isSafeInteger(pageOptions.pageSize)
+        ? pageOptions.pageSize
+        : 50;
+    if (pageSize <= 0) {
+      throw providerError(-32602, 'coinbase_fetchPermissions.pageOptions.pageSize must be positive.');
+    }
+    const cursor =
+      pageOptions.cursor === undefined
+        ? 0
+        : typeof pageOptions.cursor === 'string' && /^\d+$/.test(pageOptions.cursor)
+          ? Number(pageOptions.cursor)
+          : (() => {
+              throw providerError(
+                -32602,
+                'coinbase_fetchPermissions.pageOptions.cursor must be a decimal string.',
+              );
+            })();
+
+    await this.assertUserApproved('coinbase_fetchPermissions', params);
+
+    const nowSeconds = Math.floor(Date.now() / 1000);
+    const matching = this.coinbase.permissions
+      .filter(
+        (permission) =>
+          permission.chainId === chainId &&
+          sameAddress(permission.spendPermission.spender, spender) &&
+          (account === undefined || sameAddress(permission.spendPermission.account, account)) &&
+          (permission.spendPermission.end === 0 || permission.spendPermission.end > nowSeconds),
+      )
+      .sort((left, right) => left.createdAt - right.createdAt);
+    const page = matching.slice(cursor, cursor + pageSize);
+    const nextCursor = cursor + page.length < matching.length ? String(cursor + page.length) : undefined;
+
+    return {
+      permissions: page.map(cloneCoinbasePermission),
+      pageDescription: {
+        pageSize: page.length,
+        ...(nextCursor ? { nextCursor } : {}),
+      },
+    };
+  }
+
+  private handleCoinbaseFetchPermission(params: readonly unknown[]): Record<string, unknown> {
+    this.assertCoinbaseEnabled('coinbase_fetchPermission');
+    const request = assertRpcObject(params[0], 'coinbase_fetchPermission');
+    const permissionHash = assertRpcHash(
+      request.permissionHash,
+      'coinbase_fetchPermission.permissionHash',
+    );
+    const permission = this.coinbase.permissions.find(
+      (candidate) => candidate.permissionHash.toLowerCase() === permissionHash.toLowerCase(),
+    );
+    if (!permission) {
+      throw providerError(
+        -32603,
+        `No Coinbase spend permission found for ${permissionHash}.`,
+      );
+    }
+    return { permission: cloneCoinbasePermission(permission) };
+  }
+
+  private async handleWatchAsset(params: readonly unknown[]): Promise<boolean> {
+    const request = assertRpcObject(params[0], 'wallet_watchAsset');
+    if (typeof request.type !== 'string' || request.type.length === 0) {
+      throw providerError(-32602, 'wallet_watchAsset.type must be a non-empty string.');
+    }
+
+    const options = assertRpcObject(request.options, 'wallet_watchAsset.options');
+    if (request.type === 'ERC20' && !isAddress(String(options.address ?? ''))) {
+      throw providerError(-32602, 'wallet_watchAsset.options.address must be a valid address.');
+    }
+
+    await this.assertUserApproved('wallet_watchAsset', params);
+
+    this.watchedAssets.push({
+      chainId: this.chainId,
+      type: request.type,
+      options: { ...options },
+      request,
+    });
+
+    return true;
+  }
+
   private async handleRpcRequest(request: JsonRpcRequest): Promise<unknown> {
     const { method } = request;
     const params = normalizeParams(request.params);
+
+    if (!this.unlocked && UNLOCK_REQUIRED_METHODS.has(method)) {
+      throw providerError(4100, 'The wallet is locked. Unlock the wallet and try again.');
+    }
 
     if (!this.connected && SIGNING_METHODS.has(method)) {
       throw providerError(
@@ -1139,7 +2090,10 @@ export class MockWalletController {
 
     switch (method) {
       case 'eth_accounts':
-        return this.connected ? this.accounts : [];
+        return this.connected && this.unlocked ? this.accounts : [];
+
+      case 'solana_getAccounts':
+        return this.solanaAccounts;
 
       case 'eth_requestAccounts':
         await this.assertUserApproved(method, params);
@@ -1150,25 +2104,51 @@ export class MockWalletController {
         }
         return this.accounts;
 
+      case 'wallet_connect':
+        return this.handleWalletConnect(params);
+
+      case 'solana_requestAccounts':
+        await this.assertUserApproved(method, params);
+        if (!this.connected) {
+          this.connected = true;
+          await this.emit('connect', { chainId: this.chainId });
+          await this.emit('accountsChanged', this.accounts);
+        }
+        return this.solanaAccounts;
+
       case 'eth_chainId':
         return this.chainId;
 
       case 'net_version':
         return String(Number(BigInt(this.chainId)));
 
+      case 'eth_subscribe':
+      case 'eth_unsubscribe':
+        throw providerError(
+          4200,
+          `The mock wallet does not support the method "${method}".`,
+        );
+
       case 'wallet_getPermissions':
-        return this.connected ? this.permissionResponse() : [];
+        return this.connected && this.unlocked ? this.permissionResponse() : [];
 
       case 'wallet_requestPermissions':
-        await this.assertUserApproved(method, params);
-        this.connected = true;
-        await this.emit('accountsChanged', this.accounts);
-        return this.permissionResponse();
+        return this.handleRequestPermissions(params);
 
       case 'wallet_revokePermissions':
-        this.connected = false;
-        await this.emit('accountsChanged', []);
-        return null;
+        return this.handleRevokePermissions(params);
+
+      case 'wallet_addSubAccount':
+        return this.handleWalletAddSubAccount(params);
+
+      case 'wallet_getSubAccounts':
+        return this.handleWalletGetSubAccounts(params);
+
+      case 'coinbase_fetchPermissions':
+        return this.handleCoinbaseFetchPermissions(params);
+
+      case 'coinbase_fetchPermission':
+        return this.handleCoinbaseFetchPermission(params);
 
       // Per-handler order, library-wide: param validation (-32602) -> state
       // checks (4902) -> approval -> execution. Real MetaMask returns 4902
@@ -1260,8 +2240,7 @@ export class MockWalletController {
       }
 
       case 'wallet_watchAsset':
-        await this.assertUserApproved(method, params);
-        return true;
+        return this.handleWatchAsset(params);
 
       case 'wallet_getCapabilities': {
         this.assertEip5792Enabled(method);
@@ -1270,6 +2249,7 @@ export class MockWalletController {
         const requested = typeof address === 'string' ? address.toLowerCase() : '';
         if (
           !this.connected ||
+          !this.unlocked ||
           !this.accounts.some((account) => account.toLowerCase() === requested)
         ) {
           throw providerError(
@@ -1318,9 +2298,9 @@ export class MockWalletController {
 
       case 'metamask_getProviderState':
         return {
-          accounts: this.connected ? this.accounts : [],
+          accounts: this.connected && this.unlocked ? this.accounts : [],
           chainId: this.chainId,
-          isUnlocked: true,
+          isUnlocked: this.unlocked,
           networkVersion: String(Number(BigInt(this.chainId))),
         };
 
@@ -1384,10 +2364,25 @@ export class MockWalletController {
         await this.assertUserApproved(method, params);
         return this.activeRpcClient.request({ method, params });
 
+      case 'solana_signAllTransactions':
+      case 'solana_signAndSendAllTransactions':
+      case 'solana_signAndSendTransaction':
+      case 'solana_signIn':
+      case 'solana_signMessage':
+      case 'solana_signTransaction':
+        await this.assertUserApproved(method, params);
+        return null;
+
       default:
         // Unknown wallet-namespace methods are the wallet's responsibility;
         // forwarding them to the node would leak a confusing -32601.
         if (method.startsWith('wallet_')) {
+          throw providerError(
+            4200,
+            `The mock wallet does not support the method "${method}".`,
+          );
+        }
+        if (method.startsWith('coinbase_')) {
           throw providerError(
             4200,
             `The mock wallet does not support the method "${method}".`,

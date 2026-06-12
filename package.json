@@ -49,6 +49,18 @@
       "types": "./dist/walletconnect.d.ts",
       "import": "./dist/walletconnect.js"
     },
+    "./wallet-personas": {
+      "types": "./dist/wallet-personas.d.ts",
+      "import": "./dist/wallet-personas.js"
+    },
+    "./safe": {
+      "types": "./dist/safe.d.ts",
+      "import": "./dist/safe.js"
+    },
+    "./benchmark": {
+      "types": "./dist/benchmark.d.ts",
+      "import": "./dist/benchmark.js"
+    },
     "./transactions": {
       "types": "./dist/transactions.d.ts",
       "import": "./dist/transactions.js"
@@ -72,6 +84,18 @@
     "./real-wallet": {
       "types": "./dist/real-wallet.d.ts",
       "import": "./dist/real-wallet.js"
+    },
+    "./real-wallet-extension": {
+      "types": "./dist/real-wallet-extension.d.ts",
+      "import": "./dist/real-wallet-extension.js"
+    },
+    "./real-wallet-extension-fixtures": {
+      "types": "./dist/real-wallet-extension-fixtures.d.ts",
+      "import": "./dist/real-wallet-extension-fixtures.js"
+    },
+    "./real-wallet-cache": {
+      "types": "./dist/real-wallet-cache.d.ts",
+      "import": "./dist/real-wallet-cache.js"
     },
     "./real-wallet-fixtures": {
       "types": "./dist/real-wallet-fixtures.d.ts",
@@ -99,14 +123,16 @@
     "clean": "node -e \"require('node:fs').rmSync('dist', { recursive: true, force: true })\"",
     "prepare": "npm run build",
     "test": "playwright test --project=library",
+    "test:browsers": "playwright test --project=browser-chromium --project=browser-firefox --project=browser-webkit",
     "test:fjord": "playwright test --project=fjord",
     "test:all": "playwright test",
     "smoke:real-wallet": "node scripts/real-wallet-smoke.mjs",
     "typecheck": "tsc --noEmit",
-    "verify": "npm run typecheck && npm run build && npm test"
+    "typecheck:examples": "tsc --noEmit --target ES2022 --module NodeNext --moduleResolution NodeNext --strict --skipLibCheck examples/playwright.config.ts examples/local-wallet.spec.ts examples/live-sepolia.spec.ts",
+    "verify": "npm run typecheck && npm run typecheck:examples && npm run build && npm test"
   },
   "peerDependencies": {
-    "@playwright/test": ">=1.56.0",
+    "@playwright/test": ">=1.56.0 <2",
     "@walletconnect/sign-client": ">=2.17 <3",
     "@walletconnect/types": ">=2.17 <3",
     "@walletconnect/utils": ">=2.17 <3",

@@ -5,6 +5,7 @@ Use this before publishing a new version or pinning it inside Fjord v4.
 ## Required
 
 - `npm run typecheck`
+- `npm run typecheck:examples`
 - `npm run build`
 - `npm test`
 - `npm run smoke:real-wallet` — the live real-MetaMask smoke on the pinned
@@ -14,6 +15,8 @@ Use this before publishing a new version or pinning it inside Fjord v4.
   smoke" GitHub workflow and link the green run. 12.x
   (`WEB3_TESTER_METAMASK_VERSION=12.23.1`) is best-effort — run it when
   release notes touch the real-wallet adapter.
+  Use `npm run smoke:real-wallet -- --benchmark` when diagnosing slowness or
+  flakiness; spans are appended to `reports/web3-tester-benchmark.ndjson`.
 - `rg -n "FJORD_PRIVATE_KEY\\s*=\\s*0x[0-9a-fA-F]{64}|PRIVATE_KEY=.*[0-9a-fA-F]{64}" . -g "!node_modules/**" -g "!dist/**" -g "!.npm-cache/**"`
 - Confirm `.env` is ignored.
 - Confirm `dist/` is generated locally but not required in source review unless the team wants committed build output.
@@ -62,7 +65,7 @@ committed and CI gates on its freshness. To publish a new version:
 
 ```bash
 npm login                 # once, with publish rights to the @marigoldlabs scope
-npm run verify            # typecheck + build + hermetic tests
+npm run verify            # typecheck + example typecheck + build + hermetic tests
 npm run smoke:real-wallet # live MetaMask gate (13.34.1); see "Required" above
 npm version <patch|minor|major>   # bumps package.json + tags
 npm publish --access public       # scoped package → must be --access public

@@ -1,8 +1,6 @@
-import { type BrowserContext, type Locator } from '@playwright/test';
-export type RealWalletProfile = {
-    profileDirectory?: string;
-    userDataDir: string;
-};
+import type { BrowserContext, Locator } from '@playwright/test';
+export { resolveRealWalletHeadless, resolveRealWalletProfile } from './real-wallet-extension.js';
+export type { RealWalletProfile } from './real-wallet-extension.js';
 /**
  * MetaMask UI generation the selector surface drives. '13x' is the
  * multichain UI (validated against 13.34.1, the pinned default); '12x' is
@@ -121,6 +119,8 @@ export type RealWalletController = {
     toggleShowTestNetworks(on?: boolean): Promise<void>;
     /** Unlocks with the given password or the password from launch setup. */
     unlock(password?: string): Promise<void>;
+    /** Resolves once MetaMask is no longer showing the locked screen. */
+    waitForUnlocked(): Promise<void>;
 };
 export type RealWalletSession = RealWalletController & {
     close(): Promise<void>;
@@ -146,14 +146,6 @@ type GenLocator = Locator | {
 export declare function resolveGenLocators(locators: readonly GenLocator[], generation: WalletGeneration): Locator[];
 /** @internal Maps an extension manifest version to the UI generation it ships. */
 export declare function walletGenerationForVersion(version: string): WalletGeneration;
-/**
- * @internal Resolves the headed/headless choice. There is deliberately no
- * default: the two modes have different validation status (headed is fully
- * validated end to end; headless is validated for extension load and the
- * clipboard round-trip only), so every run must pick one explicitly.
- */
-export declare function resolveRealWalletHeadless(explicit?: boolean): boolean;
-export declare function resolveRealWalletProfile(profileDir: string): RealWalletProfile;
 /** @internal Validates and trims a 32-byte hex private key (0x optional). */
 export declare function normalizePrivateKey(privateKey: string): string;
 /** @internal */
@@ -164,5 +156,4 @@ export declare function isFullTxHash(value: string | undefined): value is `0x${s
  */
 export declare function accountRowMatcher(identifier: string): RegExp;
 export declare function launchRealWallet(options: RealWalletLaunchOptions): Promise<RealWalletSession>;
-export {};
 //# sourceMappingURL=real-wallet.d.ts.map

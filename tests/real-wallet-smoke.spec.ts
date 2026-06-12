@@ -1,12 +1,12 @@
 import http from 'node:http';
 import { once } from 'node:events';
 import { recoverMessageAddress, type Hex } from 'viem';
-import { privateKeyToAccount } from 'viem/accounts';
+import { mnemonicToAccount, privateKeyToAccount } from 'viem/accounts';
 import { AnvilInstance, ChainController } from '../src/anvil.js';
 import { DEFAULT_METAMASK_VERSION, extensionManifestVersion } from '../src/metamask-extension.js';
 import { expect, test } from '../src/real-wallet-fixtures.js';
 import { walletGenerationForVersion } from '../src/real-wallet.js';
-import type { Page } from '@playwright/test';
+import type { BrowserContext, Page } from '@playwright/test';
 import type { RealWalletSession } from '../src/real-wallet.js';
 
 /**
@@ -48,8 +48,15 @@ const smokeGeneration = (): '12x' | '13x' => {
 };
 const IS_13X = smokeGeneration() === '13x';
 
-// The well-known anvil dev mnemonic; account #0 is funded on every anvil.
-const TEST_SEED = 'test test test test test test test test test test test junk';
+// A deterministic throwaway mnemonic for the real-wallet smoke. Avoid the
+// well-known Anvil mnemonic here: current MetaMask builds discover hundreds of
+// historical accounts for that public SRP, which turns account-list operations
+// into a pathological UI benchmark instead of a release smoke.
+const TEST_SEED =
+  process.env.WEB3_TESTER_REAL_WALLET_SMOKE_SEED ??
+  'will salt rice amazing vibrant birth stadium veteran layer dash marble casual';
+const SMOKE_ACCOUNT = mnemonicToAccount(TEST_SEED).address;
+const SMOKE_ACCOUNT_BALANCE = 10n ** 20n;
 // A random key with NO relation to the mnemonic: 13.x SRP discovery derives
 // the mnemonic's accounts, so importing one of those would hit MetaMask's
 // duplicate-account error.
@@ -57,14 +64,18 @@ const IMPORT_KEY = '0x4c0883a69102937d6231471b5dbb6204fe5129617082792ae468d01a3f
 const IMPORT_KEY_ADDRESS = privateKeyToAccount(IMPORT_KEY).address;
 
 // Serial describe groups can land on different workers; derive ports from the
-// worker's parallelIndex so concurrent groups never collide on one anvil.
-const ANVIL_PORT_BASE = 19400;
+// worker's parallelIndex so concurrent groups never collide on one anvil. The
+// base can be overridden for local flake audits to avoid stale ports.
+const ANVIL_PORT_BASE = Number(process.env.ANVIL_PORT ?? 19400);
+const ANVIL_CHAIN_ID = 31337;
 
 // Each test asserts balances on its own recipient so groups running in
 // parallel workers cannot race each other's deltas.
 const JOURNEY_RECIPIENT = '0x000000000000000000000000000000000000beef';
 const MINING_RECIPIENT = '0x00000000000000000000000000000000000000a1';
 const RESET_RECIPIENT = '0x00000000000000000000000000000000000000a2';
+const routedGasApiContexts = new WeakSet<BrowserContext>();
+const tracedMetaMaskNetworkContexts = new WeakSet<BrowserContext>();
 
 const DAPP_HTML = `<!DOCTYPE html>
 <html><body>
@@ -78,10 +89,17 @@ const DAPP_HTML = `<!DOCTYPE html>
     .request({ method: 'personal_sign', params: ['0x7765623320746573746572', account] })
     .then(out, (e) => out({ error: e.code }));
   window.send = (account, to) => window.ethereum
-    .request({ method: 'eth_sendTransaction', params: [{ from: account, to, value: '0xde0b6b3a7640000' }] })
+    .request({ method: 'eth_sendTransaction', params: [{
+      from: account,
+      to,
+      value: '0xde0b6b3a7640000',
+    }] })
     .then(out, (e) => out({ error: e.code }));
   window.watchAsset = (address) => window.ethereum
     .request({ method: 'wallet_watchAsset', params: { type: 'ERC20', options: { address, symbol: 'TEST', decimals: 18 } } })
+    .then(out, (e) => out({ error: e.code }));
+  window.addChain = (chain) => window.ethereum
+    .request({ method: 'wallet_addEthereumChain', params: [chain] })
     .then(out, (e) => out({ error: e.code }));
 </script>
 </body></html>`;
@@ -94,7 +112,7 @@ type SmokeEnv = {
 };
 
 async function startSmokeEnv(anvilPort: number): Promise<SmokeEnv> {
-  const anvil = await AnvilInstance.start({ port: anvilPort, chainId: 31337, silent: true });
+  const anvil = await AnvilInstance.start({ port: anvilPort, chainId: ANVIL_CHAIN_ID, silent: true });
   const chain = new ChainController({ rpcUrl: anvil.rpcUrl, chainId: anvil.chainId });
 
   const server = http.createServer((_request, response) => {
@@ -113,6 +131,37 @@ async function stopSmokeEnv(env: SmokeEnv | undefined) {
   await env?.anvil.stop();
 }
 
+async function fundSmokeAccount(env: SmokeEnv, account: `0x${string}` = SMOKE_ACCOUNT) {
+  await env.chain.setBalance(account, SMOKE_ACCOUNT_BALANCE);
+  await env.chain.mine(1);
+  const balance = await env.chain.client.getBalance({ address: account });
+  if (balance < SMOKE_ACCOUNT_BALANCE) {
+    throw new Error(`Failed to fund ${account}; anvil balance is ${balance}.`);
+  }
+}
+
+async function waitForDappBalance(page: Page, account: `0x${string}`, minimumBalance: bigint) {
+  const deadline = Date.now() + 15_000;
+  let lastBalance: string | undefined;
+
+  do {
+    const value = await page
+      .evaluate((address) => window.ethereum.request({ method: 'eth_getBalance', params: [address, 'latest'] }), account)
+      .catch((error: unknown) => {
+        lastBalance = error instanceof Error ? error.message : String(error);
+        return undefined;
+      });
+    if (typeof value === 'string') {
+      lastBalance = value;
+      if (BigInt(value) >= minimumBalance) return;
+    }
+
+    await page.waitForTimeout(500);
+  } while (Date.now() < deadline);
+
+  throw new Error(`MetaMask provider did not observe the funded smoke balance for ${account}; last value: ${lastBalance}.`);
+}
+
 // Points MetaMask at the group's anvil. Every focused test gets a fresh
 // profile clone, so each one re-adds the network for itself.
 async function useAnvilNetwork(env: SmokeEnv, realWallet: RealWalletSession) {
@@ -125,22 +174,273 @@ async function useAnvilNetwork(env: SmokeEnv, realWallet: RealWalletSession) {
   await realWallet.switchNetwork('Anvil Local', { chainId: env.anvil.chainId });
 }
 
-// Connects the dapp and funds whichever account the wallet activates: 12.x
-// activates the SRP's first account; 13.x's multichain import derives several
-// accounts, so tests follow whichever account actually connects.
-async function connectDapp(env: SmokeEnv, page: Page, realWallet: RealWalletSession) {
-  await useAnvilNetwork(env, realWallet);
-  await page.goto(env.dappUrl);
-  await page.evaluate(() => {
-    void window.connect();
+async function addAnvilNetworkViaDapp(env: SmokeEnv, page: Page, realWallet: RealWalletSession) {
+  const account = await connectDappToWallet(env, page, realWallet);
+
+  await page.goto(env.dappUrl, { waitUntil: 'domcontentloaded' });
+  await waitForInjectedEthereum(page);
+  await page.evaluate((chain) => {
+    window.clearOut();
+    void window.addChain(chain);
+  }, {
+    chainId: `0x${env.anvil.chainId.toString(16)}`,
+    chainName: 'Anvil Local',
+    rpcUrls: [env.anvil.rpcUrl],
+    nativeCurrency: { name: 'Ether', symbol: 'ETH', decimals: 18 },
   });
-  await realWallet.connectToDapp();
-  await expect(page.locator('#out')).toContainText(/^\["0x[0-9a-f]{40}"\]$/);
-  const [account] = JSON.parse(await page.locator('#out').innerText()) as `0x${string}`[];
-  await env.chain.setBalance(account, 10n ** 20n);
+
+  const settledWithoutPrompt = await page
+    .locator('#out')
+    .textContent({ timeout: 1_500 })
+    .catch(() => '');
+  if (settledWithoutPrompt && !/null|undefined|true/.test(settledWithoutPrompt)) {
+    throw new Error(`MetaMask add-chain request settled before approval: ${settledWithoutPrompt}`);
+  }
+  if (/null|undefined|true/.test(settledWithoutPrompt ?? '')) {
+    await page.evaluate(() => {
+      window.clearOut();
+    });
+    return account;
+  }
+
+  await realWallet.approveNewNetwork();
+  await expect(page.locator('#out')).toContainText(/null|undefined|true/, { timeout: 30_000 });
   await page.evaluate(() => {
     window.clearOut();
   });
+  return account;
+}
+
+async function waitForInjectedEthereum(page: Page) {
+  await page.waitForFunction(
+    () => {
+      const ethereum = (window as unknown as { ethereum?: { request?: unknown } }).ethereum;
+      return typeof ethereum?.request === 'function';
+    },
+    undefined,
+    { timeout: 15_000 },
+  );
+}
+
+async function primeDappForWalletRequest(env: SmokeEnv, page: Page) {
+  await page.goto(env.dappUrl, { waitUntil: 'domcontentloaded' });
+  await waitForInjectedEthereum(page);
+  await page.bringToFront();
+}
+
+async function routeMetaMaskGasApiForAnvil(page: Page) {
+  const context = page.context();
+  if (routedGasApiContexts.has(context)) return;
+  routedGasApiContexts.add(context);
+
+  if (
+    process.env.WEB3_TESTER_REAL_WALLET_NETWORK_TIMING === 'true' &&
+    !tracedMetaMaskNetworkContexts.has(context)
+  ) {
+    tracedMetaMaskNetworkContexts.add(context);
+    const starts = new Map<unknown, number>();
+    context.on('request', (request) => {
+      const url = request.url();
+      if (!/^https:\/\//.test(url)) return;
+      starts.set(request, Date.now());
+      process.stderr.write(`[web3-tester metamask network] -> ${request.method()} ${url}\n`);
+    });
+    context.on('response', (response) => {
+      const request = response.request();
+      const startedAt = starts.get(request);
+      const elapsed = startedAt ? ` ${Date.now() - startedAt}ms` : '';
+      process.stderr.write(
+        `[web3-tester metamask network] <- ${response.status()} ${request.method()} ${response.url()}${elapsed}\n`,
+      );
+    });
+    context.on('requestfailed', (request) => {
+      const startedAt = starts.get(request);
+      const elapsed = startedAt ? ` ${Date.now() - startedAt}ms` : '';
+      process.stderr.write(
+        `[web3-tester metamask network] xx ${request.method()} ${request.url()}${elapsed} ${
+          request.failure()?.errorText ?? ''
+        }\n`,
+      );
+    });
+  }
+
+  const fees = {
+    low: {
+      suggestedMaxPriorityFeePerGas: '1',
+      suggestedMaxFeePerGas: '2',
+      minWaitTimeEstimate: 15_000,
+      maxWaitTimeEstimate: 30_000,
+    },
+    medium: {
+      suggestedMaxPriorityFeePerGas: '1',
+      suggestedMaxFeePerGas: '2',
+      minWaitTimeEstimate: 15_000,
+      maxWaitTimeEstimate: 30_000,
+    },
+    high: {
+      suggestedMaxPriorityFeePerGas: '1.5',
+      suggestedMaxFeePerGas: '3',
+      minWaitTimeEstimate: 15_000,
+      maxWaitTimeEstimate: 15_000,
+    },
+    estimatedBaseFee: '1',
+    networkCongestion: 0,
+    latestPriorityFeeRange: ['1', '1'],
+    historicalPriorityFeeRange: ['1', '1'],
+    historicalBaseFeeRange: ['1', '1'],
+    priorityFeeTrend: 'stable',
+    baseFeeTrend: 'stable',
+    version: '0.0.1',
+  };
+  const localActivity = {
+    data: [],
+    unprocessedNetworks: [],
+    pageInfo: {
+      count: 0,
+      hasNextPage: false,
+      hasPreviousPage: false,
+      startCursor: null,
+      endCursor: null,
+    },
+  };
+  const txSentinelNetworks = {
+    [ANVIL_CHAIN_ID]: {
+      name: 'Anvil Local',
+      group: 'local',
+      chainID: ANVIL_CHAIN_ID,
+      nativeCurrency: {
+        name: 'Ether',
+        symbol: 'ETH',
+        decimals: 18,
+        address: '0x0000000000000000000000000000000000000000',
+      },
+      network: 'anvil-local',
+      explorer: '',
+      confirmations: false,
+      smartTransactions: false,
+      relayTransactions: false,
+      hidden: true,
+      sendBundle: false,
+    },
+  };
+
+  await context.route(`https://gas.api.cx.metamask.io/networks/${ANVIL_CHAIN_ID}/suggestedGasFees`, async (route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify(fees),
+    });
+  });
+  await context.route('https://tokens.api.cx.metamask.io/v3/assets?*', async (route) => {
+    if (!route.request().url().includes(`eip155%3A${ANVIL_CHAIN_ID}`)) {
+      await route.fallback();
+      return;
+    }
+    await route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify([]),
+    });
+  });
+  await context.route('https://accounts.api.cx.metamask.io/v4/multiaccount/transactions?*', async (route) => {
+    if (!route.request().url().includes(`networks=eip155%3A${ANVIL_CHAIN_ID}`)) {
+      await route.fallback();
+      return;
+    }
+    await route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify(localActivity),
+    });
+  });
+  await context.route('https://tx-sentinel-ethereum-mainnet.api.cx.metamask.io/networks', async (route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify(txSentinelNetworks),
+    });
+  });
+  await context.route('https://gas.api.cx.metamask.io/v1/supportedNetworks', async (route) => {
+    const response = await route.fetch();
+    const networks = (await response.json()) as { fullSupport?: number[]; partialSupport?: unknown };
+    await route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify({
+        ...networks,
+        fullSupport: Array.from(new Set([...(networks.fullSupport ?? []), ANVIL_CHAIN_ID])),
+      }),
+    });
+  });
+}
+
+type ConnectDappOptions = {
+  networkSetup?: 'dapp' | 'wallet';
+};
+
+async function connectDappToWallet(env: SmokeEnv, page: Page, realWallet: RealWalletSession) {
+  for (let attempt = 0; attempt < 2; attempt += 1) {
+    await page.goto(env.dappUrl, { waitUntil: 'domcontentloaded' });
+    await waitForInjectedEthereum(page);
+    await page.evaluate(() => {
+      window.clearOut();
+      void window.connect();
+    });
+
+    const settledWithoutPrompt = await page
+      .locator('#out')
+      .textContent({ timeout: 1_500 })
+      .catch(() => '');
+    if (/^\["0x[0-9a-f]{40}"\]$/.test(settledWithoutPrompt ?? '')) break;
+    if (settledWithoutPrompt) {
+      throw new Error(`MetaMask connect request settled before approval: ${settledWithoutPrompt}`);
+    }
+
+    try {
+      await realWallet.connectToDapp();
+      break;
+    } catch (error) {
+      const settledAfterFailure = await page
+        .locator('#out')
+        .textContent({ timeout: 500 })
+        .catch(() => '');
+      if (/^\["0x[0-9a-f]{40}"\]$/.test(settledAfterFailure ?? '')) break;
+
+      const message = error instanceof Error ? error.message : String(error);
+      if (attempt === 1 || !/notification window/i.test(message)) throw error;
+      await page.waitForTimeout(1_000);
+    }
+  }
+  await expect(page.locator('#out')).toContainText(/^\["0x[0-9a-f]{40}"\]$/);
+  const [account] = JSON.parse(await page.locator('#out').innerText()) as `0x${string}`[];
+  await page.evaluate(() => {
+    window.clearOut();
+  });
+  return account;
+}
+
+// Connects the dapp and funds whichever account the wallet activates. Release
+// smoke defaults to wallet-side network setup because current MetaMask builds do
+// not consistently emit dapp-first add-chain/connect notifications. The dapp
+// setup path remains explicit for targeted add-chain audits.
+async function connectDapp(
+  env: SmokeEnv,
+  page: Page,
+  realWallet: RealWalletSession,
+  options: ConnectDappOptions = {},
+) {
+  let account: `0x${string}`;
+  const networkSetup = options.networkSetup ?? 'wallet';
+  await fundSmokeAccount(env);
+  await routeMetaMaskGasApiForAnvil(page);
+  if (networkSetup === 'wallet') {
+    await useAnvilNetwork(env, realWallet);
+    account = await connectDappToWallet(env, page, realWallet);
+  } else {
+    account = await addAnvilNetworkViaDapp(env, page, realWallet);
+  }
+  if (account.toLowerCase() !== SMOKE_ACCOUNT.toLowerCase()) await fundSmokeAccount(env, account);
+  await waitForDappBalance(page, account, SMOKE_ACCOUNT_BALANCE);
   return account;
 }
 
@@ -168,13 +468,14 @@ test.describe('real MetaMask smoke', () => {
 
   test('full journey: import, add network, connect, sign, send, reject', async ({ page, realWallet }) => {
     // 1. Wallet-side network management, dapp connection, funding.
-    const account = await connectDapp(env, page, realWallet);
+    const account = await connectDapp(env, page, realWallet, { networkSetup: 'wallet' });
 
     // getAccountAddress returns a valid address on both UI generations. On
     // 12.x it equals the connected account; 13.x's multichain account tree
     // has no single "selected" account pre-connect, so we only assert format.
     const reported = await realWallet.getAccountAddress();
     expect(reported).toMatch(/^0x[0-9a-fA-F]{40}$/);
+    await primeDappForWalletRequest(env, page);
 
     // 2. personal_sign + confirm; the signature must recover to the account.
     await page.evaluate((a) => {
@@ -187,6 +488,7 @@ test.describe('real MetaMask smoke', () => {
     expect(recovered.toLowerCase()).toBe(account.toLowerCase());
 
     // 3. Send 1 ETH through the real confirmation flow and verify on-chain.
+    await primeDappForWalletRequest(env, page);
     const balanceBefore = await env.chain.client.getBalance({ address: JOURNEY_RECIPIENT });
     await page.evaluate(([a, to]) => {
       void window.send(a, to);
@@ -197,6 +499,7 @@ test.describe('real MetaMask smoke', () => {
     expect(balanceAfter - balanceBefore).toBe(10n ** 18n);
 
     // 4. Rejection surfaces 4001 to the dapp.
+    await primeDappForWalletRequest(env, page);
     await page.evaluate(([a, to]) => {
       void window.send(a, to);
     }, [account, JOURNEY_RECIPIENT] as const);
@@ -249,7 +552,7 @@ test.describe('real MetaMask account/token/settings surface', () => {
   test('lock and unlock round-trip', async ({ realWallet }) => {
     await realWallet.lock();
     await realWallet.unlock();
-    expect(await realWallet.getAccountAddress()).toMatch(/^0x[0-9a-fA-F]{40}$/);
+    await realWallet.waitForUnlocked();
   });
 
   test('importToken lists a deployed ERC-20', async ({ realWallet }) => {
@@ -271,6 +574,7 @@ test.describe('real MetaMask account/token/settings surface', () => {
   test('confirmTransactionAndWaitForMining confirms and reads the hash', async ({ page, realWallet }) => {
     const account = await connectDapp(env, page, realWallet);
 
+    await primeDappForWalletRequest(env, page);
     const balanceBefore = await env.chain.client.getBalance({ address: MINING_RECIPIENT });
     await page.evaluate(([a, to]) => {
       void window.send(a, to);
@@ -289,6 +593,7 @@ test.describe('real MetaMask account/token/settings surface', () => {
     // A real ERC-20 so MetaMask can read symbol/decimals over the active RPC.
     const token = await env.chain.deployErc20({ symbol: 'TEST', initialSupply: 10n ** 18n });
 
+    await primeDappForWalletRequest(env, page);
     await page.evaluate((address) => {
       void window.watchAsset(address);
     }, token.address);
@@ -298,6 +603,7 @@ test.describe('real MetaMask account/token/settings surface', () => {
     await page.evaluate(() => {
       window.clearOut();
     });
+    await primeDappForWalletRequest(env, page);
     await page.evaluate((address) => {
       void window.watchAsset(address);
     }, token.address);
@@ -308,6 +614,7 @@ test.describe('real MetaMask account/token/settings surface', () => {
   test('resetAccount clears activity and a follow-up send works', async ({ page, realWallet }) => {
     const account = await connectDapp(env, page, realWallet);
 
+    await primeDappForWalletRequest(env, page);
     await page.evaluate(([a, to]) => {
       void window.send(a, to);
     }, [account, RESET_RECIPIENT] as const);
@@ -316,6 +623,7 @@ test.describe('real MetaMask account/token/settings surface', () => {
 
     await realWallet.resetAccount();
 
+    await primeDappForWalletRequest(env, page);
     await page.evaluate(() => {
       window.clearOut();
     });
