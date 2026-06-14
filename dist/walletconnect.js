@@ -716,30 +716,30 @@ export class WalletConnectWallet {
         for (const session of [...this.sessionList]) {
             try {
                 if (event === 'chainChanged') {
-                    if (!session.namespaces.eip155)
+                    const namespaces = session.namespaces;
+                    const eip155 = namespaces.eip155;
+                    if (!eip155)
                         continue;
                     const chainId = payload;
+                    const caip = toCaipChainId(chainId);
                     if (!this.chains.includes(chainId)) {
-                        // Extend the session namespace first (MetaMask-mobile behavior).
                         this.chains = [...this.chains, chainId];
-                        const namespaces = session.namespaces;
-                        const eip155 = namespaces.eip155;
-                        if (eip155) {
-                            const caip = toCaipChainId(chainId);
-                            const extended = {
-                                ...namespaces,
-                                eip155: {
-                                    ...eip155,
-                                    chains: [...(eip155.chains ?? []), caip],
-                                    accounts: [
-                                        ...(eip155.accounts ?? []),
-                                        ...this.wallet.currentAccounts.map((account) => `${caip}:${account}`),
-                                    ],
-                                },
-                            };
-                            await this.client.update({ topic: session.topic, namespaces: extended });
-                            session.namespaces = extended;
-                        }
+                    }
+                    if (!(eip155.chains ?? []).includes(caip)) {
+                        // Extend the session namespace first (MetaMask-mobile behavior).
+                        const extended = {
+                            ...namespaces,
+                            eip155: {
+                                ...eip155,
+                                chains: uniq([...(eip155.chains ?? []), caip]),
+                                accounts: uniq([
+                                    ...(eip155.accounts ?? []),
+                                    ...this.wallet.currentAccounts.map((account) => `${caip}:${account}`),
+                                ]),
+                            },
+                        };
+                        await this.client.update({ topic: session.topic, namespaces: extended });
+                        session.namespaces = extended;
                     }
                     await this.client.emit({
                         topic: session.topic,

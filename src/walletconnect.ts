@@ -1156,31 +1156,33 @@ export class WalletConnectWallet {
     for (const session of [...this.sessionList]) {
       try {
         if (event === 'chainChanged') {
-          if (!(session.namespaces as { eip155?: unknown }).eip155) continue;
+          const namespaces = session.namespaces as {
+            eip155?: { chains?: string[]; accounts?: string[]; [key: string]: unknown };
+          };
+          const eip155 = namespaces.eip155;
+          if (!eip155) continue;
+
           const chainId = payload as Hex;
+          const caip = toCaipChainId(chainId);
           if (!this.chains.includes(chainId)) {
-            // Extend the session namespace first (MetaMask-mobile behavior).
             this.chains = [...this.chains, chainId];
-            const namespaces = session.namespaces as {
-              eip155?: { chains?: string[]; accounts?: string[]; [key: string]: unknown };
+          }
+
+          if (!(eip155.chains ?? []).includes(caip)) {
+            // Extend the session namespace first (MetaMask-mobile behavior).
+            const extended = {
+              ...namespaces,
+              eip155: {
+                ...eip155,
+                chains: uniq([...(eip155.chains ?? []), caip]),
+                accounts: uniq([
+                  ...(eip155.accounts ?? []),
+                  ...this.wallet.currentAccounts.map((account) => `${caip}:${account}`),
+                ]),
+              },
             };
-            const eip155 = namespaces.eip155;
-            if (eip155) {
-              const caip = toCaipChainId(chainId);
-              const extended = {
-                ...namespaces,
-                eip155: {
-                  ...eip155,
-                  chains: [...(eip155.chains ?? []), caip],
-                  accounts: [
-                    ...(eip155.accounts ?? []),
-                    ...this.wallet.currentAccounts.map((account) => `${caip}:${account}`),
-                  ],
-                },
-              };
-              await this.client.update({ topic: session.topic, namespaces: extended });
-              session.namespaces = extended;
-            }
+            await this.client.update({ topic: session.topic, namespaces: extended });
+            session.namespaces = extended;
           }
           await this.client.emit({
             topic: session.topic,

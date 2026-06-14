@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased — 2026-06-12
+## 0.4.2 — 2026-06-14 — release hardening
 
 Broad wallet ecosystem support and release hardening.
 
@@ -63,7 +63,7 @@ Broad wallet ecosystem support and release hardening.
 
 ### Validated
 
-- `npm run verify` passes with 230 hermetic tests and 12 env-gated skips.
+- `npm run verify` passes with 233 hermetic tests and 12 env-gated skips.
 - `npm run test:browsers` passes with 87 tests across Chromium, Firefox, and
   WebKit.
 - Pinned MetaMask 13.34.1 smoke passes (`11 passed` in 4.1m) with benchmarks

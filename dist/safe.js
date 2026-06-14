@@ -220,13 +220,10 @@ export class SafeTransactionServiceClient {
         return this.getTransaction(safeTxHash);
     }
     async confirmTransaction(safeTxHash, confirmation) {
-        const body = await this.request(`/multisig-transactions/${safeTxHash}/confirmations/`, {
+        await this.request(`/multisig-transactions/${safeTxHash}/confirmations/`, {
             method: 'POST',
             body: { signature: confirmation.signature },
         });
-        if (hasResponseBody(body)) {
-            return normalizeServiceTransaction(body);
-        }
         return this.getTransaction(safeTxHash);
     }
     async getTransaction(safeTxHash) {
@@ -367,21 +364,29 @@ export class SafeWalletHarness {
     async proposeTransaction(options) {
         const proposer = options.proposer ?? this.owners[0];
         this.assertOwner(proposer);
+        let allocatedNonce;
         const data = {
             ...options.transaction,
-            nonce: options.transaction.nonce ?? this.nextNonce(),
+            nonce: options.transaction.nonce ?? (allocatedNonce = this.nextNonce()),
         };
         const safeTxHash = this.hashSafeTransaction(data);
         const signature = options.signature ?? deterministicSafeSignature(safeTxHash, proposer);
-        return this.transactionService.proposeTransaction({
-            safeAddress: this.safeAddress,
-            senderAddress: proposer,
-            safeTxHash,
-            senderSignature: signature,
-            confirmationsRequired: this.threshold,
-            origin: options.origin,
-            data,
-        });
+        try {
+            return await this.transactionService.proposeTransaction({
+                safeAddress: this.safeAddress,
+                senderAddress: proposer,
+                safeTxHash,
+                senderSignature: signature,
+                confirmationsRequired: this.threshold,
+                origin: options.origin,
+                data,
+            });
+        }
+        catch (error) {
+            if (allocatedNonce !== undefined)
+                this.rollbackNonce(allocatedNonce);
+            throw error;
+        }
     }
     async confirmTransaction(safeTxHash, options) {
         this.assertOwner(options.owner);
@@ -444,6 +449,12 @@ export class SafeWalletHarness {
         const value = this.nonce;
         this.nonce += 1n;
         return value.toString();
+    }
+    rollbackNonce(value) {
+        const nonce = BigInt(value);
+        if (this.nonce === nonce + 1n) {
+            this.nonce = nonce;
+        }
     }
     hashSafeTransaction(data) {
         if (this.safeTxHashStrategy === 'fixture') {

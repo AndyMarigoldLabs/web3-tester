@@ -212,14 +212,24 @@ export async function launchRealWalletExtension(options) {
         }
         throw error;
     });
-    const extensionId = options.extensionId ??
-        (await discoverRealWalletExtensionId(context, {
-            extensionName,
-        }));
-    const initialPage = options.initialPage === undefined ? extensionManifestDefaultPage(manifest) : options.initialPage;
-    const page = initialPage === false || initialPage === undefined
-        ? undefined
-        : await openRealWalletExtensionPage(context, extensionId, initialPage);
+    let extensionId;
+    let page;
+    try {
+        extensionId =
+            options.extensionId ??
+                (await discoverRealWalletExtensionId(context, {
+                    extensionName,
+                }));
+        const initialPage = options.initialPage === undefined ? extensionManifestDefaultPage(manifest) : options.initialPage;
+        page =
+            initialPage === false || initialPage === undefined
+                ? undefined
+                : await openRealWalletExtensionPage(context, extensionId, initialPage);
+    }
+    catch (error) {
+        await context.close().catch(() => undefined);
+        throw error;
+    }
     return {
         close: () => context.close(),
         context,

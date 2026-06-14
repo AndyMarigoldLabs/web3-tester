@@ -1,6 +1,6 @@
 {
   "name": "@marigoldlabs/web3-tester",
-  "version": "0.4.1",
+  "version": "0.4.2",
   "type": "module",
   "description": "A Playwright, Anvil, and Viem based Web3 E2E harness with an injected programmable wallet provider.",
   "license": "MIT",

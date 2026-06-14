@@ -299,6 +299,7 @@ export declare class SafeWalletHarness {
     get currentNonce(): bigint;
     requestRpc(request: JsonRpcRequest): Promise<unknown>;
     private nextNonce;
+    private rollbackNonce;
     private hashSafeTransaction;
     private assertOwner;
 }

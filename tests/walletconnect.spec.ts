@@ -1506,6 +1506,161 @@ test('EVM WalletConnect chainChanged extensions approve follow-up requests on th
   }
 });
 
+test('EVM WalletConnect chainChanged extensions update every active session namespace', async ({
+  wallet,
+}) => {
+  const handlers = new Map<string, (event: unknown) => unknown>();
+  const emitted: Array<{
+    topic: string;
+    event: { name: string; data: unknown };
+    chainId: string;
+  }> = [];
+  const updates: Array<{ topic: string; namespaces: Record<string, unknown> }> = [];
+  const sessionNamespaces = new Map<string, Record<string, unknown>>();
+  let pairCount = 0;
+  let approveCount = 0;
+  const cloneNamespaces = (namespaces: Record<string, unknown>): Record<string, unknown> =>
+    JSON.parse(JSON.stringify(namespaces)) as Record<string, unknown>;
+  const fakeClient = {
+    on: (event: string, handler: (event: unknown) => unknown) => {
+      handlers.set(event, handler);
+    },
+    off: (event: string) => {
+      handlers.delete(event);
+    },
+    pair: async () => {
+      pairCount += 1;
+      const pairingTopic = `topic-${pairCount}`;
+      queueMicrotask(() => {
+        handlers.get('session_proposal')?.({
+          id: 20 + pairCount,
+          params: {
+            pairingTopic,
+            proposer: {
+              metadata: {
+                name: `EVM Dapp ${pairCount}`,
+                description: '',
+                url: 'https://evm.test',
+                icons: [],
+              },
+            },
+            requiredNamespaces: {
+              eip155: {
+                chains: ['eip155:31337'],
+                methods: ['eth_chainId'],
+                events: ['chainChanged'],
+              },
+            },
+          },
+          verifyContext: { verified: { origin: 'https://evm.test', validation: 'VALID' } },
+        });
+      });
+    },
+    approve: async ({ namespaces }: { namespaces: Record<string, unknown> }) => {
+      approveCount += 1;
+      const topic = `session-topic-${approveCount}`;
+      sessionNamespaces.set(topic, cloneNamespaces(namespaces));
+      return {
+        topic,
+        acknowledged: async () => ({ namespaces }),
+      };
+    },
+    reject: async () => undefined,
+    respond: async () => undefined,
+    disconnect: async () => undefined,
+    emit: async (args: {
+      topic: string;
+      event: { name: string; data: unknown };
+      chainId: string;
+    }) => {
+      const namespaces = sessionNamespaces.get(args.topic) as
+        | { eip155?: { chains?: string[] } }
+        | undefined;
+      if (!namespaces?.eip155?.chains?.includes(args.chainId)) {
+        throw new Error(`Session ${args.topic} has not approved ${args.chainId}.`);
+      }
+      emitted.push(args);
+    },
+    update: async (args: { topic: string; namespaces: Record<string, unknown> }) => {
+      updates.push(args);
+      sessionNamespaces.set(args.topic, cloneNamespaces(args.namespaces));
+    },
+    core: {
+      relayer: { transportClose: async () => undefined },
+      heartbeat: { stop: () => undefined },
+    },
+  };
+
+  __setWalletConnectModuleLoader(async (specifier) => {
+    if (specifier === '@walletconnect/sign-client') {
+      return { SignClient: { init: async () => fakeClient } };
+    }
+    if (specifier === '@walletconnect/utils') {
+      return {
+        parseUri: (uri: string) => ({ topic: uri.slice('wc:'.length, uri.indexOf('@')) }),
+        buildApprovedNamespaces: ({
+          supportedNamespaces,
+        }: {
+          supportedNamespaces: Record<string, unknown>;
+        }) => ({ eip155: supportedNamespaces.eip155 }),
+        getSdkError: (code: string) => ({ code }),
+      };
+    }
+    throw new Error(`Unexpected module ${specifier}`);
+  });
+
+  let wc: WalletConnectWallet | undefined;
+  try {
+    wc = await WalletConnectWallet.create({
+      wallet,
+      projectId: 'irrelevant',
+      enforceOrigins: false,
+      sessionAuthenticate: false,
+    });
+    await wc.pair({ uri: 'wc:topic-1@2?symKey=abc' });
+    await wc.pair({ uri: 'wc:topic-2@2?symKey=def' });
+
+    await wallet.switchNetwork('0xaa36a7');
+    await expect.poll(() => updates.map((update) => update.topic)).toEqual([
+      'session-topic-1',
+      'session-topic-2',
+    ]);
+    expect(
+      updates.map(
+        (update) =>
+          (update.namespaces.eip155 as { chains?: string[]; accounts?: string[] } | undefined)?.chains,
+      ),
+    ).toEqual([
+      ['eip155:31337', 'eip155:11155111'],
+      ['eip155:31337', 'eip155:11155111'],
+    ]);
+    expect(
+      updates.map(
+        (update) =>
+          (update.namespaces.eip155 as { chains?: string[]; accounts?: string[] } | undefined)?.accounts,
+      ),
+    ).toEqual([
+      [`eip155:31337:${wallet.primaryAccount}`, `eip155:11155111:${wallet.primaryAccount}`],
+      [`eip155:31337:${wallet.primaryAccount}`, `eip155:11155111:${wallet.primaryAccount}`],
+    ]);
+    expect(emitted).toEqual([
+      {
+        topic: 'session-topic-1',
+        event: { name: 'chainChanged', data: 11155111 },
+        chainId: 'eip155:11155111',
+      },
+      {
+        topic: 'session-topic-2',
+        event: { name: 'chainChanged', data: 11155111 },
+        chainId: 'eip155:11155111',
+      },
+    ]);
+  } finally {
+    await wc?.close();
+    __setWalletConnectModuleLoader();
+  }
+});
+
 test('persona WalletConnect links format mobile and QR launch URIs', () => {
   const uri = 'wc:test-topic@2?relay-protocol=irn&symKey=abc+123';
 
