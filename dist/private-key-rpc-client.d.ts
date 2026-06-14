@@ -1,4 +1,4 @@
-import { type Account, type Chain, type Hex } from 'viem';
+import { type AccessList, type Account, type Address, type Chain, type Hex } from 'viem';
 import type { JsonRpcRequest, RpcClient } from './types.js';
 export type PrivateKeyRpcClientOptions = {
     privateKey: Hex;
@@ -7,14 +7,24 @@ export type PrivateKeyRpcClientOptions = {
     /** Opt in to signing on production (non-testnet) chains. */
     allowMainnet?: boolean;
 };
+type KnownTransactionType = 'legacy' | 'eip2930' | 'eip1559' | 'eip4844' | 'eip7702';
 export declare class PrivateKeyRpcClient implements RpcClient {
     readonly account: Account;
     readonly chain: Chain;
     readonly sentTransactions: Hex[];
     readonly sentTransactionRequests: Array<{
+        accessList?: AccessList;
+        from?: Address;
+        gas?: string;
+        gasPrice?: string;
         hash: Hex;
-        to?: Hex;
+        maxFeePerBlobGas?: string;
+        maxFeePerGas?: string;
+        maxPriorityFeePerGas?: string;
+        nonce?: number;
+        to?: Address | null;
         data?: Hex;
+        type?: KnownTransactionType;
         value?: string;
     }>;
     private readonly publicClient;
@@ -47,7 +57,7 @@ export declare class PrivateKeyRpcClient implements RpcClient {
         uid: string;
         call: (parameters: import("viem").CallParameters<Chain>) => Promise<import("viem").CallReturnType>;
         createAccessList: (parameters: import("viem").CreateAccessListParameters<Chain>) => Promise<{
-            accessList: import("viem").AccessList;
+            accessList: AccessList;
             gasUsed: bigint;
         }>;
         createBlockFilter: () => Promise<import("viem").CreateBlockFilterReturnType>;
@@ -56,7 +66,7 @@ export declare class PrivateKeyRpcClient implements RpcClient {
         createPendingTransactionFilter: () => Promise<import("viem").CreatePendingTransactionFilterReturnType>;
         estimateContractGas: <chain extends Chain | undefined, const abi extends import("viem").Abi | readonly unknown[], functionName extends import("viem").ContractFunctionName<abi, "nonpayable" | "payable">, args extends import("viem").ContractFunctionArgs<abi, "nonpayable" | "payable", functionName>>(args: import("viem").EstimateContractGasParameters<abi, functionName, args, chain>) => Promise<import("viem").EstimateContractGasReturnType>;
         estimateGas: (args: import("viem").EstimateGasParameters<Chain>) => Promise<import("viem").EstimateGasReturnType>;
-        fillTransaction: <chainOverride extends Chain | undefined = undefined, accountOverride extends Account | import("viem").Address | undefined = undefined>(args: import("viem").FillTransactionParameters<Chain, Account | undefined, chainOverride, accountOverride>) => Promise<import("viem").FillTransactionReturnType<Chain, chainOverride>>;
+        fillTransaction: <chainOverride extends Chain | undefined = undefined, accountOverride extends Account | Address | undefined = undefined>(args: import("viem").FillTransactionParameters<Chain, Account | undefined, chainOverride, accountOverride>) => Promise<import("viem").FillTransactionReturnType<Chain, chainOverride>>;
         getBalance: (args: import("viem").GetBalanceParameters) => Promise<import("viem").GetBalanceReturnType>;
         getBlobBaseFee: () => Promise<import("viem").GetBlobBaseFeeReturnType>;
         getBlock: <includeTransactions extends boolean = false, blockTag extends import("viem").BlockTag = "latest">(args?: import("viem").GetBlockParameters<includeTransactions, blockTag> | undefined) => Promise<{
@@ -72,7 +82,7 @@ export declare class PrivateKeyRpcClient implements RpcClient {
             extraData: Hex;
             gasLimit: bigint;
             gasUsed: bigint;
-            miner: import("viem").Address;
+            miner: Address;
             mixHash: import("viem").Hash;
             parentBeaconBlockRoot?: `0x${string}` | undefined;
             parentHash: import("viem").Hash;
@@ -88,8 +98,8 @@ export declare class PrivateKeyRpcClient implements RpcClient {
             withdrawalsRoot?: `0x${string}` | undefined;
             transactions: includeTransactions extends true ? ({
                 value: bigint;
-                from: import("viem").Address;
-                to: import("viem").Address | null;
+                from: Address;
+                to: Address | null;
                 type: "legacy";
                 blockTimestamp?: bigint | undefined;
                 hash: import("viem").Hash;
@@ -114,8 +124,8 @@ export declare class PrivateKeyRpcClient implements RpcClient {
                 transactionIndex: (blockTag extends "pending" ? true : false) extends infer T_2 ? T_2 extends (blockTag extends "pending" ? true : false) ? T_2 extends true ? null : number : never : never;
             } | {
                 value: bigint;
-                from: import("viem").Address;
-                to: import("viem").Address | null;
+                from: Address;
+                to: Address | null;
                 type: "eip2930";
                 blockTimestamp?: bigint | undefined;
                 hash: import("viem").Hash;
@@ -131,7 +141,7 @@ export declare class PrivateKeyRpcClient implements RpcClient {
                 maxFeePerBlobGas?: undefined | undefined;
                 maxFeePerGas?: undefined | undefined;
                 maxPriorityFeePerGas?: undefined | undefined;
-                accessList: import("viem").AccessList;
+                accessList: AccessList;
                 authorizationList?: undefined | undefined;
                 input: Hex;
                 typeHex: Hex | null;
@@ -140,8 +150,8 @@ export declare class PrivateKeyRpcClient implements RpcClient {
                 transactionIndex: (blockTag extends "pending" ? true : false) extends infer T_5 ? T_5 extends (blockTag extends "pending" ? true : false) ? T_5 extends true ? null : number : never : never;
             } | {
                 value: bigint;
-                from: import("viem").Address;
-                to: import("viem").Address | null;
+                from: Address;
+                to: Address | null;
                 type: "eip1559";
                 blockTimestamp?: bigint | undefined;
                 hash: import("viem").Hash;
@@ -157,7 +167,7 @@ export declare class PrivateKeyRpcClient implements RpcClient {
                 maxFeePerBlobGas?: undefined | undefined;
                 maxFeePerGas: bigint;
                 maxPriorityFeePerGas: bigint;
-                accessList: import("viem").AccessList;
+                accessList: AccessList;
                 authorizationList?: undefined | undefined;
                 input: Hex;
                 typeHex: Hex | null;
@@ -166,8 +176,8 @@ export declare class PrivateKeyRpcClient implements RpcClient {
                 transactionIndex: (blockTag extends "pending" ? true : false) extends infer T_8 ? T_8 extends (blockTag extends "pending" ? true : false) ? T_8 extends true ? null : number : never : never;
             } | {
                 value: bigint;
-                from: import("viem").Address;
-                to: import("viem").Address | null;
+                from: Address;
+                to: Address | null;
                 type: "eip4844";
                 blockTimestamp?: bigint | undefined;
                 hash: import("viem").Hash;
@@ -183,7 +193,7 @@ export declare class PrivateKeyRpcClient implements RpcClient {
                 maxFeePerBlobGas: bigint;
                 maxFeePerGas: bigint;
                 maxPriorityFeePerGas: bigint;
-                accessList: import("viem").AccessList;
+                accessList: AccessList;
                 authorizationList?: undefined | undefined;
                 input: Hex;
                 typeHex: Hex | null;
@@ -192,8 +202,8 @@ export declare class PrivateKeyRpcClient implements RpcClient {
                 transactionIndex: (blockTag extends "pending" ? true : false) extends infer T_11 ? T_11 extends (blockTag extends "pending" ? true : false) ? T_11 extends true ? null : number : never : never;
             } | {
                 value: bigint;
-                from: import("viem").Address;
-                to: import("viem").Address | null;
+                from: Address;
+                to: Address | null;
                 type: "eip7702";
                 blockTimestamp?: bigint | undefined;
                 hash: import("viem").Hash;
@@ -209,7 +219,7 @@ export declare class PrivateKeyRpcClient implements RpcClient {
                 maxFeePerBlobGas?: undefined | undefined;
                 maxFeePerGas: bigint;
                 maxPriorityFeePerGas: bigint;
-                accessList: import("viem").AccessList;
+                accessList: AccessList;
                 authorizationList: import("viem").SignedAuthorizationList;
                 input: Hex;
                 typeHex: Hex | null;
@@ -245,8 +255,8 @@ export declare class PrivateKeyRpcClient implements RpcClient {
         getStorageAt: (args: import("viem").GetStorageAtParameters) => Promise<import("viem").GetStorageAtReturnType>;
         getTransaction: <blockTag extends import("viem").BlockTag = "latest">(args: import("viem").GetTransactionParameters<blockTag>) => Promise<{
             value: bigint;
-            from: import("viem").Address;
-            to: import("viem").Address | null;
+            from: Address;
+            to: Address | null;
             type: "legacy";
             blockTimestamp?: bigint | undefined;
             hash: import("viem").Hash;
@@ -271,8 +281,8 @@ export declare class PrivateKeyRpcClient implements RpcClient {
             transactionIndex: (blockTag extends "pending" ? true : false) extends infer T_2 ? T_2 extends (blockTag extends "pending" ? true : false) ? T_2 extends true ? null : number : never : never;
         } | {
             value: bigint;
-            from: import("viem").Address;
-            to: import("viem").Address | null;
+            from: Address;
+            to: Address | null;
             type: "eip2930";
             blockTimestamp?: bigint | undefined;
             hash: import("viem").Hash;
@@ -288,7 +298,7 @@ export declare class PrivateKeyRpcClient implements RpcClient {
             maxFeePerBlobGas?: undefined | undefined;
             maxFeePerGas?: undefined | undefined;
             maxPriorityFeePerGas?: undefined | undefined;
-            accessList: import("viem").AccessList;
+            accessList: AccessList;
             authorizationList?: undefined | undefined;
             input: Hex;
             typeHex: Hex | null;
@@ -297,8 +307,8 @@ export declare class PrivateKeyRpcClient implements RpcClient {
             transactionIndex: (blockTag extends "pending" ? true : false) extends infer T_5 ? T_5 extends (blockTag extends "pending" ? true : false) ? T_5 extends true ? null : number : never : never;
         } | {
             value: bigint;
-            from: import("viem").Address;
-            to: import("viem").Address | null;
+            from: Address;
+            to: Address | null;
             type: "eip1559";
             blockTimestamp?: bigint | undefined;
             hash: import("viem").Hash;
@@ -314,7 +324,7 @@ export declare class PrivateKeyRpcClient implements RpcClient {
             maxFeePerBlobGas?: undefined | undefined;
             maxFeePerGas: bigint;
             maxPriorityFeePerGas: bigint;
-            accessList: import("viem").AccessList;
+            accessList: AccessList;
             authorizationList?: undefined | undefined;
             input: Hex;
             typeHex: Hex | null;
@@ -323,8 +333,8 @@ export declare class PrivateKeyRpcClient implements RpcClient {
             transactionIndex: (blockTag extends "pending" ? true : false) extends infer T_8 ? T_8 extends (blockTag extends "pending" ? true : false) ? T_8 extends true ? null : number : never : never;
         } | {
             value: bigint;
-            from: import("viem").Address;
-            to: import("viem").Address | null;
+            from: Address;
+            to: Address | null;
             type: "eip4844";
             blockTimestamp?: bigint | undefined;
             hash: import("viem").Hash;
@@ -340,7 +350,7 @@ export declare class PrivateKeyRpcClient implements RpcClient {
             maxFeePerBlobGas: bigint;
             maxFeePerGas: bigint;
             maxPriorityFeePerGas: bigint;
-            accessList: import("viem").AccessList;
+            accessList: AccessList;
             authorizationList?: undefined | undefined;
             input: Hex;
             typeHex: Hex | null;
@@ -349,8 +359,8 @@ export declare class PrivateKeyRpcClient implements RpcClient {
             transactionIndex: (blockTag extends "pending" ? true : false) extends infer T_11 ? T_11 extends (blockTag extends "pending" ? true : false) ? T_11 extends true ? null : number : never : never;
         } | {
             value: bigint;
-            from: import("viem").Address;
-            to: import("viem").Address | null;
+            from: Address;
+            to: Address | null;
             type: "eip7702";
             blockTimestamp?: bigint | undefined;
             hash: import("viem").Hash;
@@ -366,7 +376,7 @@ export declare class PrivateKeyRpcClient implements RpcClient {
             maxFeePerBlobGas?: undefined | undefined;
             maxFeePerGas: bigint;
             maxPriorityFeePerGas: bigint;
-            accessList: import("viem").AccessList;
+            accessList: AccessList;
             authorizationList: import("viem").SignedAuthorizationList;
             input: Hex;
             typeHex: Hex | null;
@@ -378,13 +388,13 @@ export declare class PrivateKeyRpcClient implements RpcClient {
         getTransactionCount: (args: import("viem").GetTransactionCountParameters) => Promise<import("viem").GetTransactionCountReturnType>;
         getTransactionReceipt: (args: import("viem").GetTransactionReceiptParameters) => Promise<import("viem").TransactionReceipt>;
         multicall: <const contracts extends readonly unknown[], allowFailure extends boolean = true>(args: import("viem").MulticallParameters<contracts, allowFailure>) => Promise<import("viem").MulticallReturnType<contracts, allowFailure>>;
-        prepareTransactionRequest: <const request extends import("viem").PrepareTransactionRequestRequest<Chain, chainOverride>, chainOverride extends Chain | undefined = undefined, accountOverride extends Account | import("viem").Address | undefined = undefined>(args: import("viem").PrepareTransactionRequestParameters<Chain, Account | undefined, chainOverride, accountOverride, request>) => Promise<import("viem").UnionRequiredBy<Extract<import("viem").UnionOmit<import("viem").ExtractChainFormatterParameters<import("viem").DeriveChain<Chain, chainOverride>, "transactionRequest", import("viem").TransactionRequest>, "from"> & (import("viem").DeriveChain<Chain, chainOverride> extends infer T_1 ? T_1 extends import("viem").DeriveChain<Chain, chainOverride> ? T_1 extends Chain ? {
+        prepareTransactionRequest: <const request extends import("viem").PrepareTransactionRequestRequest<Chain, chainOverride>, chainOverride extends Chain | undefined = undefined, accountOverride extends Account | Address | undefined = undefined>(args: import("viem").PrepareTransactionRequestParameters<Chain, Account | undefined, chainOverride, accountOverride, request>) => Promise<import("viem").UnionRequiredBy<Extract<import("viem").UnionOmit<import("viem").ExtractChainFormatterParameters<import("viem").DeriveChain<Chain, chainOverride>, "transactionRequest", import("viem").TransactionRequest>, "from"> & (import("viem").DeriveChain<Chain, chainOverride> extends infer T_1 ? T_1 extends import("viem").DeriveChain<Chain, chainOverride> ? T_1 extends Chain ? {
             chain: T_1;
         } : {
             chain?: undefined;
         } : never : never) & (import("viem").DeriveAccount<Account | undefined, accountOverride> extends infer T_2 ? T_2 extends import("viem").DeriveAccount<Account | undefined, accountOverride> ? T_2 extends Account ? {
             account: T_2;
-            from: import("viem").Address;
+            from: Address;
         } : {
             account?: undefined;
             from?: undefined;
@@ -397,7 +407,7 @@ export declare class PrivateKeyRpcClient implements RpcClient {
                 gasPrice?: bigint | undefined;
                 sidecars?: undefined | undefined;
             } & import("viem").FeeValuesLegacy ? "legacy" : never) | (request extends {
-                accessList?: import("viem").AccessList | undefined;
+                accessList?: AccessList | undefined;
                 authorizationList?: undefined | undefined;
                 blobs?: undefined | undefined;
                 blobVersionedHashes?: undefined | undefined;
@@ -413,7 +423,7 @@ export declare class PrivateKeyRpcClient implements RpcClient {
             }, import("viem").FeeValuesEIP1559> & {
                 accessList?: import("viem").TransactionSerializableEIP2930["accessList"] | undefined;
             }) ? "eip1559" : never) | (request extends {
-                accessList?: import("viem").AccessList | undefined;
+                accessList?: AccessList | undefined;
                 authorizationList?: undefined | undefined;
                 blobs?: undefined | undefined;
                 blobVersionedHashes?: undefined | undefined;
@@ -425,7 +435,7 @@ export declare class PrivateKeyRpcClient implements RpcClient {
             } & {
                 accessList: import("viem").TransactionSerializableEIP2930["accessList"];
             } ? "eip2930" : never) | (request extends ({
-                accessList?: import("viem").AccessList | undefined;
+                accessList?: AccessList | undefined;
                 authorizationList?: undefined | undefined;
                 blobs?: readonly `0x${string}`[] | readonly import("viem").ByteArray[] | undefined;
                 blobVersionedHashes?: readonly `0x${string}`[] | undefined;
@@ -434,7 +444,7 @@ export declare class PrivateKeyRpcClient implements RpcClient {
                 maxPriorityFeePerGas?: bigint | undefined;
                 sidecars?: false | readonly import("viem").BlobSidecar<`0x${string}`>[] | undefined;
             } | {
-                accessList?: import("viem").AccessList | undefined;
+                accessList?: AccessList | undefined;
                 authorizationList?: undefined | undefined;
                 blobs?: readonly `0x${string}`[] | readonly import("viem").ByteArray[] | undefined;
                 blobVersionedHashes?: readonly `0x${string}`[] | undefined;
@@ -449,7 +459,7 @@ export declare class PrivateKeyRpcClient implements RpcClient {
             } | {
                 sidecars: import("viem").TransactionSerializableEIP4844["sidecars"];
             }, import("viem").TransactionSerializableEIP4844>) ? "eip4844" : never) | (request extends ({
-                accessList?: import("viem").AccessList | undefined;
+                accessList?: AccessList | undefined;
                 authorizationList?: import("viem").SignedAuthorizationList | undefined;
                 blobs?: undefined | undefined;
                 blobVersionedHashes?: undefined | undefined;
@@ -459,7 +469,7 @@ export declare class PrivateKeyRpcClient implements RpcClient {
                 maxPriorityFeePerGas?: bigint | undefined;
                 sidecars?: undefined | undefined;
             } | {
-                accessList?: import("viem").AccessList | undefined;
+                accessList?: AccessList | undefined;
                 authorizationList?: import("viem").SignedAuthorizationList | undefined;
                 blobs?: undefined | undefined;
                 blobVersionedHashes?: undefined | undefined;
@@ -478,7 +488,7 @@ export declare class PrivateKeyRpcClient implements RpcClient {
                 gasPrice?: bigint | undefined;
                 sidecars?: undefined | undefined;
             } & import("viem").FeeValuesLegacy ? "legacy" : never) | (request extends {
-                accessList?: import("viem").AccessList | undefined;
+                accessList?: AccessList | undefined;
                 authorizationList?: undefined | undefined;
                 blobs?: undefined | undefined;
                 blobVersionedHashes?: undefined | undefined;
@@ -494,7 +504,7 @@ export declare class PrivateKeyRpcClient implements RpcClient {
             }, import("viem").FeeValuesEIP1559> & {
                 accessList?: import("viem").TransactionSerializableEIP2930["accessList"] | undefined;
             }) ? "eip1559" : never) | (request extends {
-                accessList?: import("viem").AccessList | undefined;
+                accessList?: AccessList | undefined;
                 authorizationList?: undefined | undefined;
                 blobs?: undefined | undefined;
                 blobVersionedHashes?: undefined | undefined;
@@ -506,7 +516,7 @@ export declare class PrivateKeyRpcClient implements RpcClient {
             } & {
                 accessList: import("viem").TransactionSerializableEIP2930["accessList"];
             } ? "eip2930" : never) | (request extends ({
-                accessList?: import("viem").AccessList | undefined;
+                accessList?: AccessList | undefined;
                 authorizationList?: undefined | undefined;
                 blobs?: readonly `0x${string}`[] | readonly import("viem").ByteArray[] | undefined;
                 blobVersionedHashes?: readonly `0x${string}`[] | undefined;
@@ -515,7 +525,7 @@ export declare class PrivateKeyRpcClient implements RpcClient {
                 maxPriorityFeePerGas?: bigint | undefined;
                 sidecars?: false | readonly import("viem").BlobSidecar<`0x${string}`>[] | undefined;
             } | {
-                accessList?: import("viem").AccessList | undefined;
+                accessList?: AccessList | undefined;
                 authorizationList?: undefined | undefined;
                 blobs?: readonly `0x${string}`[] | readonly import("viem").ByteArray[] | undefined;
                 blobVersionedHashes?: readonly `0x${string}`[] | undefined;
@@ -530,7 +540,7 @@ export declare class PrivateKeyRpcClient implements RpcClient {
             } | {
                 sidecars: import("viem").TransactionSerializableEIP4844["sidecars"];
             }, import("viem").TransactionSerializableEIP4844>) ? "eip4844" : never) | (request extends ({
-                accessList?: import("viem").AccessList | undefined;
+                accessList?: AccessList | undefined;
                 authorizationList?: import("viem").SignedAuthorizationList | undefined;
                 blobs?: undefined | undefined;
                 blobVersionedHashes?: undefined | undefined;
@@ -540,7 +550,7 @@ export declare class PrivateKeyRpcClient implements RpcClient {
                 maxPriorityFeePerGas?: bigint | undefined;
                 sidecars?: undefined | undefined;
             } | {
-                accessList?: import("viem").AccessList | undefined;
+                accessList?: AccessList | undefined;
                 authorizationList?: import("viem").SignedAuthorizationList | undefined;
                 blobs?: undefined | undefined;
                 blobVersionedHashes?: undefined | undefined;
@@ -559,7 +569,7 @@ export declare class PrivateKeyRpcClient implements RpcClient {
                 gasPrice?: bigint | undefined;
                 sidecars?: undefined | undefined;
             } & import("viem").FeeValuesLegacy ? "legacy" : never) | (request extends {
-                accessList?: import("viem").AccessList | undefined;
+                accessList?: AccessList | undefined;
                 authorizationList?: undefined | undefined;
                 blobs?: undefined | undefined;
                 blobVersionedHashes?: undefined | undefined;
@@ -575,7 +585,7 @@ export declare class PrivateKeyRpcClient implements RpcClient {
             }, import("viem").FeeValuesEIP1559> & {
                 accessList?: import("viem").TransactionSerializableEIP2930["accessList"] | undefined;
             }) ? "eip1559" : never) | (request extends {
-                accessList?: import("viem").AccessList | undefined;
+                accessList?: AccessList | undefined;
                 authorizationList?: undefined | undefined;
                 blobs?: undefined | undefined;
                 blobVersionedHashes?: undefined | undefined;
@@ -587,7 +597,7 @@ export declare class PrivateKeyRpcClient implements RpcClient {
             } & {
                 accessList: import("viem").TransactionSerializableEIP2930["accessList"];
             } ? "eip2930" : never) | (request extends ({
-                accessList?: import("viem").AccessList | undefined;
+                accessList?: AccessList | undefined;
                 authorizationList?: undefined | undefined;
                 blobs?: readonly `0x${string}`[] | readonly import("viem").ByteArray[] | undefined;
                 blobVersionedHashes?: readonly `0x${string}`[] | undefined;
@@ -596,7 +606,7 @@ export declare class PrivateKeyRpcClient implements RpcClient {
                 maxPriorityFeePerGas?: bigint | undefined;
                 sidecars?: false | readonly import("viem").BlobSidecar<`0x${string}`>[] | undefined;
             } | {
-                accessList?: import("viem").AccessList | undefined;
+                accessList?: AccessList | undefined;
                 authorizationList?: undefined | undefined;
                 blobs?: readonly `0x${string}`[] | readonly import("viem").ByteArray[] | undefined;
                 blobVersionedHashes?: readonly `0x${string}`[] | undefined;
@@ -611,7 +621,7 @@ export declare class PrivateKeyRpcClient implements RpcClient {
             } | {
                 sidecars: import("viem").TransactionSerializableEIP4844["sidecars"];
             }, import("viem").TransactionSerializableEIP4844>) ? "eip4844" : never) | (request extends ({
-                accessList?: import("viem").AccessList | undefined;
+                accessList?: AccessList | undefined;
                 authorizationList?: import("viem").SignedAuthorizationList | undefined;
                 blobs?: undefined | undefined;
                 blobVersionedHashes?: undefined | undefined;
@@ -621,7 +631,7 @@ export declare class PrivateKeyRpcClient implements RpcClient {
                 maxPriorityFeePerGas?: bigint | undefined;
                 sidecars?: undefined | undefined;
             } | {
-                accessList?: import("viem").AccessList | undefined;
+                accessList?: AccessList | undefined;
                 authorizationList?: import("viem").SignedAuthorizationList | undefined;
                 blobs?: undefined | undefined;
                 blobVersionedHashes?: undefined | undefined;
@@ -640,7 +650,7 @@ export declare class PrivateKeyRpcClient implements RpcClient {
                 gasPrice?: bigint | undefined;
                 sidecars?: undefined | undefined;
             } & import("viem").FeeValuesLegacy ? "legacy" : never) | (request extends {
-                accessList?: import("viem").AccessList | undefined;
+                accessList?: AccessList | undefined;
                 authorizationList?: undefined | undefined;
                 blobs?: undefined | undefined;
                 blobVersionedHashes?: undefined | undefined;
@@ -656,7 +666,7 @@ export declare class PrivateKeyRpcClient implements RpcClient {
             }, import("viem").FeeValuesEIP1559> & {
                 accessList?: import("viem").TransactionSerializableEIP2930["accessList"] | undefined;
             }) ? "eip1559" : never) | (request extends {
-                accessList?: import("viem").AccessList | undefined;
+                accessList?: AccessList | undefined;
                 authorizationList?: undefined | undefined;
                 blobs?: undefined | undefined;
                 blobVersionedHashes?: undefined | undefined;
@@ -668,7 +678,7 @@ export declare class PrivateKeyRpcClient implements RpcClient {
             } & {
                 accessList: import("viem").TransactionSerializableEIP2930["accessList"];
             } ? "eip2930" : never) | (request extends ({
-                accessList?: import("viem").AccessList | undefined;
+                accessList?: AccessList | undefined;
                 authorizationList?: undefined | undefined;
                 blobs?: readonly `0x${string}`[] | readonly import("viem").ByteArray[] | undefined;
                 blobVersionedHashes?: readonly `0x${string}`[] | undefined;
@@ -677,7 +687,7 @@ export declare class PrivateKeyRpcClient implements RpcClient {
                 maxPriorityFeePerGas?: bigint | undefined;
                 sidecars?: false | readonly import("viem").BlobSidecar<`0x${string}`>[] | undefined;
             } | {
-                accessList?: import("viem").AccessList | undefined;
+                accessList?: AccessList | undefined;
                 authorizationList?: undefined | undefined;
                 blobs?: readonly `0x${string}`[] | readonly import("viem").ByteArray[] | undefined;
                 blobVersionedHashes?: readonly `0x${string}`[] | undefined;
@@ -692,7 +702,7 @@ export declare class PrivateKeyRpcClient implements RpcClient {
             } | {
                 sidecars: import("viem").TransactionSerializableEIP4844["sidecars"];
             }, import("viem").TransactionSerializableEIP4844>) ? "eip4844" : never) | (request extends ({
-                accessList?: import("viem").AccessList | undefined;
+                accessList?: AccessList | undefined;
                 authorizationList?: import("viem").SignedAuthorizationList | undefined;
                 blobs?: undefined | undefined;
                 blobVersionedHashes?: undefined | undefined;
@@ -702,7 +712,7 @@ export declare class PrivateKeyRpcClient implements RpcClient {
                 maxPriorityFeePerGas?: bigint | undefined;
                 sidecars?: undefined | undefined;
             } | {
-                accessList?: import("viem").AccessList | undefined;
+                accessList?: AccessList | undefined;
                 authorizationList?: import("viem").SignedAuthorizationList | undefined;
                 blobs?: undefined | undefined;
                 blobVersionedHashes?: undefined | undefined;
@@ -722,7 +732,7 @@ export declare class PrivateKeyRpcClient implements RpcClient {
             gasPrice?: bigint | undefined;
             sidecars?: undefined | undefined;
         } & import("viem").FeeValuesLegacy ? "legacy" : never) | (request extends {
-            accessList?: import("viem").AccessList | undefined;
+            accessList?: AccessList | undefined;
             authorizationList?: undefined | undefined;
             blobs?: undefined | undefined;
             blobVersionedHashes?: undefined | undefined;
@@ -738,7 +748,7 @@ export declare class PrivateKeyRpcClient implements RpcClient {
         }, import("viem").FeeValuesEIP1559> & {
             accessList?: import("viem").TransactionSerializableEIP2930["accessList"] | undefined;
         }) ? "eip1559" : never) | (request extends {
-            accessList?: import("viem").AccessList | undefined;
+            accessList?: AccessList | undefined;
             authorizationList?: undefined | undefined;
             blobs?: undefined | undefined;
             blobVersionedHashes?: undefined | undefined;
@@ -750,7 +760,7 @@ export declare class PrivateKeyRpcClient implements RpcClient {
         } & {
             accessList: import("viem").TransactionSerializableEIP2930["accessList"];
         } ? "eip2930" : never) | (request extends ({
-            accessList?: import("viem").AccessList | undefined;
+            accessList?: AccessList | undefined;
             authorizationList?: undefined | undefined;
             blobs?: readonly `0x${string}`[] | readonly import("viem").ByteArray[] | undefined;
             blobVersionedHashes?: readonly `0x${string}`[] | undefined;
@@ -759,7 +769,7 @@ export declare class PrivateKeyRpcClient implements RpcClient {
             maxPriorityFeePerGas?: bigint | undefined;
             sidecars?: false | readonly import("viem").BlobSidecar<`0x${string}`>[] | undefined;
         } | {
-            accessList?: import("viem").AccessList | undefined;
+            accessList?: AccessList | undefined;
             authorizationList?: undefined | undefined;
             blobs?: readonly `0x${string}`[] | readonly import("viem").ByteArray[] | undefined;
             blobVersionedHashes?: readonly `0x${string}`[] | undefined;
@@ -774,7 +784,7 @@ export declare class PrivateKeyRpcClient implements RpcClient {
         } | {
             sidecars: import("viem").TransactionSerializableEIP4844["sidecars"];
         }, import("viem").TransactionSerializableEIP4844>) ? "eip4844" : never) | (request extends ({
-            accessList?: import("viem").AccessList | undefined;
+            accessList?: AccessList | undefined;
             authorizationList?: import("viem").SignedAuthorizationList | undefined;
             blobs?: undefined | undefined;
             blobVersionedHashes?: undefined | undefined;
@@ -784,7 +794,7 @@ export declare class PrivateKeyRpcClient implements RpcClient {
             maxPriorityFeePerGas?: bigint | undefined;
             sidecars?: undefined | undefined;
         } | {
-            accessList?: import("viem").AccessList | undefined;
+            accessList?: AccessList | undefined;
             authorizationList?: import("viem").SignedAuthorizationList | undefined;
             blobs?: undefined | undefined;
             blobVersionedHashes?: undefined | undefined;
@@ -803,7 +813,7 @@ export declare class PrivateKeyRpcClient implements RpcClient {
             gasPrice?: bigint | undefined;
             sidecars?: undefined | undefined;
         } & import("viem").FeeValuesLegacy ? "legacy" : never) | (request extends {
-            accessList?: import("viem").AccessList | undefined;
+            accessList?: AccessList | undefined;
             authorizationList?: undefined | undefined;
             blobs?: undefined | undefined;
             blobVersionedHashes?: undefined | undefined;
@@ -819,7 +829,7 @@ export declare class PrivateKeyRpcClient implements RpcClient {
         }, import("viem").FeeValuesEIP1559> & {
             accessList?: import("viem").TransactionSerializableEIP2930["accessList"] | undefined;
         }) ? "eip1559" : never) | (request extends {
-            accessList?: import("viem").AccessList | undefined;
+            accessList?: AccessList | undefined;
             authorizationList?: undefined | undefined;
             blobs?: undefined | undefined;
             blobVersionedHashes?: undefined | undefined;
@@ -831,7 +841,7 @@ export declare class PrivateKeyRpcClient implements RpcClient {
         } & {
             accessList: import("viem").TransactionSerializableEIP2930["accessList"];
         } ? "eip2930" : never) | (request extends ({
-            accessList?: import("viem").AccessList | undefined;
+            accessList?: AccessList | undefined;
             authorizationList?: undefined | undefined;
             blobs?: readonly `0x${string}`[] | readonly import("viem").ByteArray[] | undefined;
             blobVersionedHashes?: readonly `0x${string}`[] | undefined;
@@ -840,7 +850,7 @@ export declare class PrivateKeyRpcClient implements RpcClient {
             maxPriorityFeePerGas?: bigint | undefined;
             sidecars?: false | readonly import("viem").BlobSidecar<`0x${string}`>[] | undefined;
         } | {
-            accessList?: import("viem").AccessList | undefined;
+            accessList?: AccessList | undefined;
             authorizationList?: undefined | undefined;
             blobs?: readonly `0x${string}`[] | readonly import("viem").ByteArray[] | undefined;
             blobVersionedHashes?: readonly `0x${string}`[] | undefined;
@@ -855,7 +865,7 @@ export declare class PrivateKeyRpcClient implements RpcClient {
         } | {
             sidecars: import("viem").TransactionSerializableEIP4844["sidecars"];
         }, import("viem").TransactionSerializableEIP4844>) ? "eip4844" : never) | (request extends ({
-            accessList?: import("viem").AccessList | undefined;
+            accessList?: AccessList | undefined;
             authorizationList?: import("viem").SignedAuthorizationList | undefined;
             blobs?: undefined | undefined;
             blobVersionedHashes?: undefined | undefined;
@@ -865,7 +875,7 @@ export declare class PrivateKeyRpcClient implements RpcClient {
             maxPriorityFeePerGas?: bigint | undefined;
             sidecars?: undefined | undefined;
         } | {
-            accessList?: import("viem").AccessList | undefined;
+            accessList?: AccessList | undefined;
             authorizationList?: import("viem").SignedAuthorizationList | undefined;
             blobs?: undefined | undefined;
             blobVersionedHashes?: undefined | undefined;
@@ -884,7 +894,7 @@ export declare class PrivateKeyRpcClient implements RpcClient {
             gasPrice?: bigint | undefined;
             sidecars?: undefined | undefined;
         } & import("viem").FeeValuesLegacy ? "legacy" : never) | (request extends {
-            accessList?: import("viem").AccessList | undefined;
+            accessList?: AccessList | undefined;
             authorizationList?: undefined | undefined;
             blobs?: undefined | undefined;
             blobVersionedHashes?: undefined | undefined;
@@ -900,7 +910,7 @@ export declare class PrivateKeyRpcClient implements RpcClient {
         }, import("viem").FeeValuesEIP1559> & {
             accessList?: import("viem").TransactionSerializableEIP2930["accessList"] | undefined;
         }) ? "eip1559" : never) | (request extends {
-            accessList?: import("viem").AccessList | undefined;
+            accessList?: AccessList | undefined;
             authorizationList?: undefined | undefined;
             blobs?: undefined | undefined;
             blobVersionedHashes?: undefined | undefined;
@@ -912,7 +922,7 @@ export declare class PrivateKeyRpcClient implements RpcClient {
         } & {
             accessList: import("viem").TransactionSerializableEIP2930["accessList"];
         } ? "eip2930" : never) | (request extends ({
-            accessList?: import("viem").AccessList | undefined;
+            accessList?: AccessList | undefined;
             authorizationList?: undefined | undefined;
             blobs?: readonly `0x${string}`[] | readonly import("viem").ByteArray[] | undefined;
             blobVersionedHashes?: readonly `0x${string}`[] | undefined;
@@ -921,7 +931,7 @@ export declare class PrivateKeyRpcClient implements RpcClient {
             maxPriorityFeePerGas?: bigint | undefined;
             sidecars?: false | readonly import("viem").BlobSidecar<`0x${string}`>[] | undefined;
         } | {
-            accessList?: import("viem").AccessList | undefined;
+            accessList?: AccessList | undefined;
             authorizationList?: undefined | undefined;
             blobs?: readonly `0x${string}`[] | readonly import("viem").ByteArray[] | undefined;
             blobVersionedHashes?: readonly `0x${string}`[] | undefined;
@@ -936,7 +946,7 @@ export declare class PrivateKeyRpcClient implements RpcClient {
         } | {
             sidecars: import("viem").TransactionSerializableEIP4844["sidecars"];
         }, import("viem").TransactionSerializableEIP4844>) ? "eip4844" : never) | (request extends ({
-            accessList?: import("viem").AccessList | undefined;
+            accessList?: AccessList | undefined;
             authorizationList?: import("viem").SignedAuthorizationList | undefined;
             blobs?: undefined | undefined;
             blobVersionedHashes?: undefined | undefined;
@@ -946,7 +956,7 @@ export declare class PrivateKeyRpcClient implements RpcClient {
             maxPriorityFeePerGas?: bigint | undefined;
             sidecars?: undefined | undefined;
         } | {
-            accessList?: import("viem").AccessList | undefined;
+            accessList?: AccessList | undefined;
             authorizationList?: import("viem").SignedAuthorizationList | undefined;
             blobs?: undefined | undefined;
             blobVersionedHashes?: undefined | undefined;
@@ -965,7 +975,7 @@ export declare class PrivateKeyRpcClient implements RpcClient {
             gasPrice?: bigint | undefined;
             sidecars?: undefined | undefined;
         } & import("viem").FeeValuesLegacy ? "legacy" : never) | (request extends {
-            accessList?: import("viem").AccessList | undefined;
+            accessList?: AccessList | undefined;
             authorizationList?: undefined | undefined;
             blobs?: undefined | undefined;
             blobVersionedHashes?: undefined | undefined;
@@ -981,7 +991,7 @@ export declare class PrivateKeyRpcClient implements RpcClient {
         }, import("viem").FeeValuesEIP1559> & {
             accessList?: import("viem").TransactionSerializableEIP2930["accessList"] | undefined;
         }) ? "eip1559" : never) | (request extends {
-            accessList?: import("viem").AccessList | undefined;
+            accessList?: AccessList | undefined;
             authorizationList?: undefined | undefined;
             blobs?: undefined | undefined;
             blobVersionedHashes?: undefined | undefined;
@@ -993,7 +1003,7 @@ export declare class PrivateKeyRpcClient implements RpcClient {
         } & {
             accessList: import("viem").TransactionSerializableEIP2930["accessList"];
         } ? "eip2930" : never) | (request extends ({
-            accessList?: import("viem").AccessList | undefined;
+            accessList?: AccessList | undefined;
             authorizationList?: undefined | undefined;
             blobs?: readonly `0x${string}`[] | readonly import("viem").ByteArray[] | undefined;
             blobVersionedHashes?: readonly `0x${string}`[] | undefined;
@@ -1002,7 +1012,7 @@ export declare class PrivateKeyRpcClient implements RpcClient {
             maxPriorityFeePerGas?: bigint | undefined;
             sidecars?: false | readonly import("viem").BlobSidecar<`0x${string}`>[] | undefined;
         } | {
-            accessList?: import("viem").AccessList | undefined;
+            accessList?: AccessList | undefined;
             authorizationList?: undefined | undefined;
             blobs?: readonly `0x${string}`[] | readonly import("viem").ByteArray[] | undefined;
             blobVersionedHashes?: readonly `0x${string}`[] | undefined;
@@ -1017,7 +1027,7 @@ export declare class PrivateKeyRpcClient implements RpcClient {
         } | {
             sidecars: import("viem").TransactionSerializableEIP4844["sidecars"];
         }, import("viem").TransactionSerializableEIP4844>) ? "eip4844" : never) | (request extends ({
-            accessList?: import("viem").AccessList | undefined;
+            accessList?: AccessList | undefined;
             authorizationList?: import("viem").SignedAuthorizationList | undefined;
             blobs?: undefined | undefined;
             blobVersionedHashes?: undefined | undefined;
@@ -1027,7 +1037,7 @@ export declare class PrivateKeyRpcClient implements RpcClient {
             maxPriorityFeePerGas?: bigint | undefined;
             sidecars?: undefined | undefined;
         } | {
-            accessList?: import("viem").AccessList | undefined;
+            accessList?: AccessList | undefined;
             authorizationList?: import("viem").SignedAuthorizationList | undefined;
             blobs?: undefined | undefined;
             blobVersionedHashes?: undefined | undefined;
@@ -1047,7 +1057,7 @@ export declare class PrivateKeyRpcClient implements RpcClient {
                 gasPrice?: bigint | undefined;
                 sidecars?: undefined | undefined;
             } & import("viem").FeeValuesLegacy ? "legacy" : never) | (request extends {
-                accessList?: import("viem").AccessList | undefined;
+                accessList?: AccessList | undefined;
                 authorizationList?: undefined | undefined;
                 blobs?: undefined | undefined;
                 blobVersionedHashes?: undefined | undefined;
@@ -1063,7 +1073,7 @@ export declare class PrivateKeyRpcClient implements RpcClient {
             }, import("viem").FeeValuesEIP1559> & {
                 accessList?: import("viem").TransactionSerializableEIP2930["accessList"] | undefined;
             }) ? "eip1559" : never) | (request extends {
-                accessList?: import("viem").AccessList | undefined;
+                accessList?: AccessList | undefined;
                 authorizationList?: undefined | undefined;
                 blobs?: undefined | undefined;
                 blobVersionedHashes?: undefined | undefined;
@@ -1075,7 +1085,7 @@ export declare class PrivateKeyRpcClient implements RpcClient {
             } & {
                 accessList: import("viem").TransactionSerializableEIP2930["accessList"];
             } ? "eip2930" : never) | (request extends ({
-                accessList?: import("viem").AccessList | undefined;
+                accessList?: AccessList | undefined;
                 authorizationList?: undefined | undefined;
                 blobs?: readonly `0x${string}`[] | readonly import("viem").ByteArray[] | undefined;
                 blobVersionedHashes?: readonly `0x${string}`[] | undefined;
@@ -1084,7 +1094,7 @@ export declare class PrivateKeyRpcClient implements RpcClient {
                 maxPriorityFeePerGas?: bigint | undefined;
                 sidecars?: false | readonly import("viem").BlobSidecar<`0x${string}`>[] | undefined;
             } | {
-                accessList?: import("viem").AccessList | undefined;
+                accessList?: AccessList | undefined;
                 authorizationList?: undefined | undefined;
                 blobs?: readonly `0x${string}`[] | readonly import("viem").ByteArray[] | undefined;
                 blobVersionedHashes?: readonly `0x${string}`[] | undefined;
@@ -1099,7 +1109,7 @@ export declare class PrivateKeyRpcClient implements RpcClient {
             } | {
                 sidecars: import("viem").TransactionSerializableEIP4844["sidecars"];
             }, import("viem").TransactionSerializableEIP4844>) ? "eip4844" : never) | (request extends ({
-                accessList?: import("viem").AccessList | undefined;
+                accessList?: AccessList | undefined;
                 authorizationList?: import("viem").SignedAuthorizationList | undefined;
                 blobs?: undefined | undefined;
                 blobVersionedHashes?: undefined | undefined;
@@ -1109,7 +1119,7 @@ export declare class PrivateKeyRpcClient implements RpcClient {
                 maxPriorityFeePerGas?: bigint | undefined;
                 sidecars?: undefined | undefined;
             } | {
-                accessList?: import("viem").AccessList | undefined;
+                accessList?: AccessList | undefined;
                 authorizationList?: import("viem").SignedAuthorizationList | undefined;
                 blobs?: undefined | undefined;
                 blobVersionedHashes?: undefined | undefined;
@@ -1128,7 +1138,7 @@ export declare class PrivateKeyRpcClient implements RpcClient {
                 gasPrice?: bigint | undefined;
                 sidecars?: undefined | undefined;
             } & import("viem").FeeValuesLegacy ? "legacy" : never) | (request extends {
-                accessList?: import("viem").AccessList | undefined;
+                accessList?: AccessList | undefined;
                 authorizationList?: undefined | undefined;
                 blobs?: undefined | undefined;
                 blobVersionedHashes?: undefined | undefined;
@@ -1144,7 +1154,7 @@ export declare class PrivateKeyRpcClient implements RpcClient {
             }, import("viem").FeeValuesEIP1559> & {
                 accessList?: import("viem").TransactionSerializableEIP2930["accessList"] | undefined;
             }) ? "eip1559" : never) | (request extends {
-                accessList?: import("viem").AccessList | undefined;
+                accessList?: AccessList | undefined;
                 authorizationList?: undefined | undefined;
                 blobs?: undefined | undefined;
                 blobVersionedHashes?: undefined | undefined;
@@ -1156,7 +1166,7 @@ export declare class PrivateKeyRpcClient implements RpcClient {
             } & {
                 accessList: import("viem").TransactionSerializableEIP2930["accessList"];
             } ? "eip2930" : never) | (request extends ({
-                accessList?: import("viem").AccessList | undefined;
+                accessList?: AccessList | undefined;
                 authorizationList?: undefined | undefined;
                 blobs?: readonly `0x${string}`[] | readonly import("viem").ByteArray[] | undefined;
                 blobVersionedHashes?: readonly `0x${string}`[] | undefined;
@@ -1165,7 +1175,7 @@ export declare class PrivateKeyRpcClient implements RpcClient {
                 maxPriorityFeePerGas?: bigint | undefined;
                 sidecars?: false | readonly import("viem").BlobSidecar<`0x${string}`>[] | undefined;
             } | {
-                accessList?: import("viem").AccessList | undefined;
+                accessList?: AccessList | undefined;
                 authorizationList?: undefined | undefined;
                 blobs?: readonly `0x${string}`[] | readonly import("viem").ByteArray[] | undefined;
                 blobVersionedHashes?: readonly `0x${string}`[] | undefined;
@@ -1180,7 +1190,7 @@ export declare class PrivateKeyRpcClient implements RpcClient {
             } | {
                 sidecars: import("viem").TransactionSerializableEIP4844["sidecars"];
             }, import("viem").TransactionSerializableEIP4844>) ? "eip4844" : never) | (request extends ({
-                accessList?: import("viem").AccessList | undefined;
+                accessList?: AccessList | undefined;
                 authorizationList?: import("viem").SignedAuthorizationList | undefined;
                 blobs?: undefined | undefined;
                 blobVersionedHashes?: undefined | undefined;
@@ -1190,7 +1200,7 @@ export declare class PrivateKeyRpcClient implements RpcClient {
                 maxPriorityFeePerGas?: bigint | undefined;
                 sidecars?: undefined | undefined;
             } | {
-                accessList?: import("viem").AccessList | undefined;
+                accessList?: AccessList | undefined;
                 authorizationList?: import("viem").SignedAuthorizationList | undefined;
                 blobs?: undefined | undefined;
                 blobVersionedHashes?: undefined | undefined;
@@ -1209,7 +1219,7 @@ export declare class PrivateKeyRpcClient implements RpcClient {
                 gasPrice?: bigint | undefined;
                 sidecars?: undefined | undefined;
             } & import("viem").FeeValuesLegacy ? "legacy" : never) | (request extends {
-                accessList?: import("viem").AccessList | undefined;
+                accessList?: AccessList | undefined;
                 authorizationList?: undefined | undefined;
                 blobs?: undefined | undefined;
                 blobVersionedHashes?: undefined | undefined;
@@ -1225,7 +1235,7 @@ export declare class PrivateKeyRpcClient implements RpcClient {
             }, import("viem").FeeValuesEIP1559> & {
                 accessList?: import("viem").TransactionSerializableEIP2930["accessList"] | undefined;
             }) ? "eip1559" : never) | (request extends {
-                accessList?: import("viem").AccessList | undefined;
+                accessList?: AccessList | undefined;
                 authorizationList?: undefined | undefined;
                 blobs?: undefined | undefined;
                 blobVersionedHashes?: undefined | undefined;
@@ -1237,7 +1247,7 @@ export declare class PrivateKeyRpcClient implements RpcClient {
             } & {
                 accessList: import("viem").TransactionSerializableEIP2930["accessList"];
             } ? "eip2930" : never) | (request extends ({
-                accessList?: import("viem").AccessList | undefined;
+                accessList?: AccessList | undefined;
                 authorizationList?: undefined | undefined;
                 blobs?: readonly `0x${string}`[] | readonly import("viem").ByteArray[] | undefined;
                 blobVersionedHashes?: readonly `0x${string}`[] | undefined;
@@ -1246,7 +1256,7 @@ export declare class PrivateKeyRpcClient implements RpcClient {
                 maxPriorityFeePerGas?: bigint | undefined;
                 sidecars?: false | readonly import("viem").BlobSidecar<`0x${string}`>[] | undefined;
             } | {
-                accessList?: import("viem").AccessList | undefined;
+                accessList?: AccessList | undefined;
                 authorizationList?: undefined | undefined;
                 blobs?: readonly `0x${string}`[] | readonly import("viem").ByteArray[] | undefined;
                 blobVersionedHashes?: readonly `0x${string}`[] | undefined;
@@ -1261,7 +1271,7 @@ export declare class PrivateKeyRpcClient implements RpcClient {
             } | {
                 sidecars: import("viem").TransactionSerializableEIP4844["sidecars"];
             }, import("viem").TransactionSerializableEIP4844>) ? "eip4844" : never) | (request extends ({
-                accessList?: import("viem").AccessList | undefined;
+                accessList?: AccessList | undefined;
                 authorizationList?: import("viem").SignedAuthorizationList | undefined;
                 blobs?: undefined | undefined;
                 blobVersionedHashes?: undefined | undefined;
@@ -1271,7 +1281,7 @@ export declare class PrivateKeyRpcClient implements RpcClient {
                 maxPriorityFeePerGas?: bigint | undefined;
                 sidecars?: undefined | undefined;
             } | {
-                accessList?: import("viem").AccessList | undefined;
+                accessList?: AccessList | undefined;
                 authorizationList?: import("viem").SignedAuthorizationList | undefined;
                 blobs?: undefined | undefined;
                 blobVersionedHashes?: undefined | undefined;
@@ -1290,7 +1300,7 @@ export declare class PrivateKeyRpcClient implements RpcClient {
                 gasPrice?: bigint | undefined;
                 sidecars?: undefined | undefined;
             } & import("viem").FeeValuesLegacy ? "legacy" : never) | (request extends {
-                accessList?: import("viem").AccessList | undefined;
+                accessList?: AccessList | undefined;
                 authorizationList?: undefined | undefined;
                 blobs?: undefined | undefined;
                 blobVersionedHashes?: undefined | undefined;
@@ -1306,7 +1316,7 @@ export declare class PrivateKeyRpcClient implements RpcClient {
             }, import("viem").FeeValuesEIP1559> & {
                 accessList?: import("viem").TransactionSerializableEIP2930["accessList"] | undefined;
             }) ? "eip1559" : never) | (request extends {
-                accessList?: import("viem").AccessList | undefined;
+                accessList?: AccessList | undefined;
                 authorizationList?: undefined | undefined;
                 blobs?: undefined | undefined;
                 blobVersionedHashes?: undefined | undefined;
@@ -1318,7 +1328,7 @@ export declare class PrivateKeyRpcClient implements RpcClient {
             } & {
                 accessList: import("viem").TransactionSerializableEIP2930["accessList"];
             } ? "eip2930" : never) | (request extends ({
-                accessList?: import("viem").AccessList | undefined;
+                accessList?: AccessList | undefined;
                 authorizationList?: undefined | undefined;
                 blobs?: readonly `0x${string}`[] | readonly import("viem").ByteArray[] | undefined;
                 blobVersionedHashes?: readonly `0x${string}`[] | undefined;
@@ -1327,7 +1337,7 @@ export declare class PrivateKeyRpcClient implements RpcClient {
                 maxPriorityFeePerGas?: bigint | undefined;
                 sidecars?: false | readonly import("viem").BlobSidecar<`0x${string}`>[] | undefined;
             } | {
-                accessList?: import("viem").AccessList | undefined;
+                accessList?: AccessList | undefined;
                 authorizationList?: undefined | undefined;
                 blobs?: readonly `0x${string}`[] | readonly import("viem").ByteArray[] | undefined;
                 blobVersionedHashes?: readonly `0x${string}`[] | undefined;
@@ -1342,7 +1352,7 @@ export declare class PrivateKeyRpcClient implements RpcClient {
             } | {
                 sidecars: import("viem").TransactionSerializableEIP4844["sidecars"];
             }, import("viem").TransactionSerializableEIP4844>) ? "eip4844" : never) | (request extends ({
-                accessList?: import("viem").AccessList | undefined;
+                accessList?: AccessList | undefined;
                 authorizationList?: import("viem").SignedAuthorizationList | undefined;
                 blobs?: undefined | undefined;
                 blobVersionedHashes?: undefined | undefined;
@@ -1352,7 +1362,7 @@ export declare class PrivateKeyRpcClient implements RpcClient {
                 maxPriorityFeePerGas?: bigint | undefined;
                 sidecars?: undefined | undefined;
             } | {
-                accessList?: import("viem").AccessList | undefined;
+                accessList?: AccessList | undefined;
                 authorizationList?: import("viem").SignedAuthorizationList | undefined;
                 blobs?: undefined | undefined;
                 blobVersionedHashes?: undefined | undefined;
@@ -1372,7 +1382,7 @@ export declare class PrivateKeyRpcClient implements RpcClient {
             gasPrice?: bigint | undefined;
             sidecars?: undefined | undefined;
         } & import("viem").FeeValuesLegacy ? "legacy" : never) | (request extends {
-            accessList?: import("viem").AccessList | undefined;
+            accessList?: AccessList | undefined;
             authorizationList?: undefined | undefined;
             blobs?: undefined | undefined;
             blobVersionedHashes?: undefined | undefined;
@@ -1388,7 +1398,7 @@ export declare class PrivateKeyRpcClient implements RpcClient {
         }, import("viem").FeeValuesEIP1559> & {
             accessList?: import("viem").TransactionSerializableEIP2930["accessList"] | undefined;
         }) ? "eip1559" : never) | (request extends {
-            accessList?: import("viem").AccessList | undefined;
+            accessList?: AccessList | undefined;
             authorizationList?: undefined | undefined;
             blobs?: undefined | undefined;
             blobVersionedHashes?: undefined | undefined;
@@ -1400,7 +1410,7 @@ export declare class PrivateKeyRpcClient implements RpcClient {
         } & {
             accessList: import("viem").TransactionSerializableEIP2930["accessList"];
         } ? "eip2930" : never) | (request extends ({
-            accessList?: import("viem").AccessList | undefined;
+            accessList?: AccessList | undefined;
             authorizationList?: undefined | undefined;
             blobs?: readonly `0x${string}`[] | readonly import("viem").ByteArray[] | undefined;
             blobVersionedHashes?: readonly `0x${string}`[] | undefined;
@@ -1409,7 +1419,7 @@ export declare class PrivateKeyRpcClient implements RpcClient {
             maxPriorityFeePerGas?: bigint | undefined;
             sidecars?: false | readonly import("viem").BlobSidecar<`0x${string}`>[] | undefined;
         } | {
-            accessList?: import("viem").AccessList | undefined;
+            accessList?: AccessList | undefined;
             authorizationList?: undefined | undefined;
             blobs?: readonly `0x${string}`[] | readonly import("viem").ByteArray[] | undefined;
             blobVersionedHashes?: readonly `0x${string}`[] | undefined;
@@ -1424,7 +1434,7 @@ export declare class PrivateKeyRpcClient implements RpcClient {
         } | {
             sidecars: import("viem").TransactionSerializableEIP4844["sidecars"];
         }, import("viem").TransactionSerializableEIP4844>) ? "eip4844" : never) | (request extends ({
-            accessList?: import("viem").AccessList | undefined;
+            accessList?: AccessList | undefined;
             authorizationList?: import("viem").SignedAuthorizationList | undefined;
             blobs?: undefined | undefined;
             blobVersionedHashes?: undefined | undefined;
@@ -1434,7 +1444,7 @@ export declare class PrivateKeyRpcClient implements RpcClient {
             maxPriorityFeePerGas?: bigint | undefined;
             sidecars?: undefined | undefined;
         } | {
-            accessList?: import("viem").AccessList | undefined;
+            accessList?: AccessList | undefined;
             authorizationList?: import("viem").SignedAuthorizationList | undefined;
             blobs?: undefined | undefined;
             blobVersionedHashes?: undefined | undefined;
@@ -1453,7 +1463,7 @@ export declare class PrivateKeyRpcClient implements RpcClient {
             gasPrice?: bigint | undefined;
             sidecars?: undefined | undefined;
         } & import("viem").FeeValuesLegacy ? "legacy" : never) | (request extends {
-            accessList?: import("viem").AccessList | undefined;
+            accessList?: AccessList | undefined;
             authorizationList?: undefined | undefined;
             blobs?: undefined | undefined;
             blobVersionedHashes?: undefined | undefined;
@@ -1469,7 +1479,7 @@ export declare class PrivateKeyRpcClient implements RpcClient {
         }, import("viem").FeeValuesEIP1559> & {
             accessList?: import("viem").TransactionSerializableEIP2930["accessList"] | undefined;
         }) ? "eip1559" : never) | (request extends {
-            accessList?: import("viem").AccessList | undefined;
+            accessList?: AccessList | undefined;
             authorizationList?: undefined | undefined;
             blobs?: undefined | undefined;
             blobVersionedHashes?: undefined | undefined;
@@ -1481,7 +1491,7 @@ export declare class PrivateKeyRpcClient implements RpcClient {
         } & {
             accessList: import("viem").TransactionSerializableEIP2930["accessList"];
         } ? "eip2930" : never) | (request extends ({
-            accessList?: import("viem").AccessList | undefined;
+            accessList?: AccessList | undefined;
             authorizationList?: undefined | undefined;
             blobs?: readonly `0x${string}`[] | readonly import("viem").ByteArray[] | undefined;
             blobVersionedHashes?: readonly `0x${string}`[] | undefined;
@@ -1490,7 +1500,7 @@ export declare class PrivateKeyRpcClient implements RpcClient {
             maxPriorityFeePerGas?: bigint | undefined;
             sidecars?: false | readonly import("viem").BlobSidecar<`0x${string}`>[] | undefined;
         } | {
-            accessList?: import("viem").AccessList | undefined;
+            accessList?: AccessList | undefined;
             authorizationList?: undefined | undefined;
             blobs?: readonly `0x${string}`[] | readonly import("viem").ByteArray[] | undefined;
             blobVersionedHashes?: readonly `0x${string}`[] | undefined;
@@ -1505,7 +1515,7 @@ export declare class PrivateKeyRpcClient implements RpcClient {
         } | {
             sidecars: import("viem").TransactionSerializableEIP4844["sidecars"];
         }, import("viem").TransactionSerializableEIP4844>) ? "eip4844" : never) | (request extends ({
-            accessList?: import("viem").AccessList | undefined;
+            accessList?: AccessList | undefined;
             authorizationList?: import("viem").SignedAuthorizationList | undefined;
             blobs?: undefined | undefined;
             blobVersionedHashes?: undefined | undefined;
@@ -1515,7 +1525,7 @@ export declare class PrivateKeyRpcClient implements RpcClient {
             maxPriorityFeePerGas?: bigint | undefined;
             sidecars?: undefined | undefined;
         } | {
-            accessList?: import("viem").AccessList | undefined;
+            accessList?: AccessList | undefined;
             authorizationList?: import("viem").SignedAuthorizationList | undefined;
             blobs?: undefined | undefined;
             blobVersionedHashes?: undefined | undefined;
@@ -1534,7 +1544,7 @@ export declare class PrivateKeyRpcClient implements RpcClient {
             gasPrice?: bigint | undefined;
             sidecars?: undefined | undefined;
         } & import("viem").FeeValuesLegacy ? "legacy" : never) | (request extends {
-            accessList?: import("viem").AccessList | undefined;
+            accessList?: AccessList | undefined;
             authorizationList?: undefined | undefined;
             blobs?: undefined | undefined;
             blobVersionedHashes?: undefined | undefined;
@@ -1550,7 +1560,7 @@ export declare class PrivateKeyRpcClient implements RpcClient {
         }, import("viem").FeeValuesEIP1559> & {
             accessList?: import("viem").TransactionSerializableEIP2930["accessList"] | undefined;
         }) ? "eip1559" : never) | (request extends {
-            accessList?: import("viem").AccessList | undefined;
+            accessList?: AccessList | undefined;
             authorizationList?: undefined | undefined;
             blobs?: undefined | undefined;
             blobVersionedHashes?: undefined | undefined;
@@ -1562,7 +1572,7 @@ export declare class PrivateKeyRpcClient implements RpcClient {
         } & {
             accessList: import("viem").TransactionSerializableEIP2930["accessList"];
         } ? "eip2930" : never) | (request extends ({
-            accessList?: import("viem").AccessList | undefined;
+            accessList?: AccessList | undefined;
             authorizationList?: undefined | undefined;
             blobs?: readonly `0x${string}`[] | readonly import("viem").ByteArray[] | undefined;
             blobVersionedHashes?: readonly `0x${string}`[] | undefined;
@@ -1571,7 +1581,7 @@ export declare class PrivateKeyRpcClient implements RpcClient {
             maxPriorityFeePerGas?: bigint | undefined;
             sidecars?: false | readonly import("viem").BlobSidecar<`0x${string}`>[] | undefined;
         } | {
-            accessList?: import("viem").AccessList | undefined;
+            accessList?: AccessList | undefined;
             authorizationList?: undefined | undefined;
             blobs?: readonly `0x${string}`[] | readonly import("viem").ByteArray[] | undefined;
             blobVersionedHashes?: readonly `0x${string}`[] | undefined;
@@ -1586,7 +1596,7 @@ export declare class PrivateKeyRpcClient implements RpcClient {
         } | {
             sidecars: import("viem").TransactionSerializableEIP4844["sidecars"];
         }, import("viem").TransactionSerializableEIP4844>) ? "eip4844" : never) | (request extends ({
-            accessList?: import("viem").AccessList | undefined;
+            accessList?: AccessList | undefined;
             authorizationList?: import("viem").SignedAuthorizationList | undefined;
             blobs?: undefined | undefined;
             blobVersionedHashes?: undefined | undefined;
@@ -1596,7 +1606,7 @@ export declare class PrivateKeyRpcClient implements RpcClient {
             maxPriorityFeePerGas?: bigint | undefined;
             sidecars?: undefined | undefined;
         } | {
-            accessList?: import("viem").AccessList | undefined;
+            accessList?: AccessList | undefined;
             authorizationList?: import("viem").SignedAuthorizationList | undefined;
             blobs?: undefined | undefined;
             blobVersionedHashes?: undefined | undefined;
@@ -1615,7 +1625,7 @@ export declare class PrivateKeyRpcClient implements RpcClient {
             gasPrice?: bigint | undefined;
             sidecars?: undefined | undefined;
         } & import("viem").FeeValuesLegacy ? "legacy" : never) | (request extends {
-            accessList?: import("viem").AccessList | undefined;
+            accessList?: AccessList | undefined;
             authorizationList?: undefined | undefined;
             blobs?: undefined | undefined;
             blobVersionedHashes?: undefined | undefined;
@@ -1631,7 +1641,7 @@ export declare class PrivateKeyRpcClient implements RpcClient {
         }, import("viem").FeeValuesEIP1559> & {
             accessList?: import("viem").TransactionSerializableEIP2930["accessList"] | undefined;
         }) ? "eip1559" : never) | (request extends {
-            accessList?: import("viem").AccessList | undefined;
+            accessList?: AccessList | undefined;
             authorizationList?: undefined | undefined;
             blobs?: undefined | undefined;
             blobVersionedHashes?: undefined | undefined;
@@ -1643,7 +1653,7 @@ export declare class PrivateKeyRpcClient implements RpcClient {
         } & {
             accessList: import("viem").TransactionSerializableEIP2930["accessList"];
         } ? "eip2930" : never) | (request extends ({
-            accessList?: import("viem").AccessList | undefined;
+            accessList?: AccessList | undefined;
             authorizationList?: undefined | undefined;
             blobs?: readonly `0x${string}`[] | readonly import("viem").ByteArray[] | undefined;
             blobVersionedHashes?: readonly `0x${string}`[] | undefined;
@@ -1652,7 +1662,7 @@ export declare class PrivateKeyRpcClient implements RpcClient {
             maxPriorityFeePerGas?: bigint | undefined;
             sidecars?: false | readonly import("viem").BlobSidecar<`0x${string}`>[] | undefined;
         } | {
-            accessList?: import("viem").AccessList | undefined;
+            accessList?: AccessList | undefined;
             authorizationList?: undefined | undefined;
             blobs?: readonly `0x${string}`[] | readonly import("viem").ByteArray[] | undefined;
             blobVersionedHashes?: readonly `0x${string}`[] | undefined;
@@ -1667,7 +1677,7 @@ export declare class PrivateKeyRpcClient implements RpcClient {
         } | {
             sidecars: import("viem").TransactionSerializableEIP4844["sidecars"];
         }, import("viem").TransactionSerializableEIP4844>) ? "eip4844" : never) | (request extends ({
-            accessList?: import("viem").AccessList | undefined;
+            accessList?: AccessList | undefined;
             authorizationList?: import("viem").SignedAuthorizationList | undefined;
             blobs?: undefined | undefined;
             blobVersionedHashes?: undefined | undefined;
@@ -1677,7 +1687,7 @@ export declare class PrivateKeyRpcClient implements RpcClient {
             maxPriorityFeePerGas?: bigint | undefined;
             sidecars?: undefined | undefined;
         } | {
-            accessList?: import("viem").AccessList | undefined;
+            accessList?: AccessList | undefined;
             authorizationList?: import("viem").SignedAuthorizationList | undefined;
             blobs?: undefined | undefined;
             blobVersionedHashes?: undefined | undefined;
@@ -1701,7 +1711,7 @@ export declare class PrivateKeyRpcClient implements RpcClient {
         simulate: <const calls extends readonly unknown[]>(args: import("viem").SimulateBlocksParameters<calls>) => Promise<import("viem").SimulateBlocksReturnType<calls>>;
         simulateBlocks: <const calls extends readonly unknown[]>(args: import("viem").SimulateBlocksParameters<calls>) => Promise<import("viem").SimulateBlocksReturnType<calls>>;
         simulateCalls: <const calls extends readonly unknown[]>(args: import("viem").SimulateCallsParameters<calls>) => Promise<import("viem").SimulateCallsReturnType<calls>>;
-        simulateContract: <const abi extends import("viem").Abi | readonly unknown[], functionName extends import("viem").ContractFunctionName<abi, "nonpayable" | "payable">, const args_1 extends import("viem").ContractFunctionArgs<abi, "nonpayable" | "payable", functionName>, chainOverride extends Chain | undefined, accountOverride extends Account | import("viem").Address | undefined = undefined>(args: import("viem").SimulateContractParameters<abi, functionName, args_1, Chain, chainOverride, accountOverride>) => Promise<import("viem").SimulateContractReturnType<abi, functionName, args_1, Chain, Account | undefined, chainOverride, accountOverride>>;
+        simulateContract: <const abi extends import("viem").Abi | readonly unknown[], functionName extends import("viem").ContractFunctionName<abi, "nonpayable" | "payable">, const args_1 extends import("viem").ContractFunctionArgs<abi, "nonpayable" | "payable", functionName>, chainOverride extends Chain | undefined, accountOverride extends Account | Address | undefined = undefined>(args: import("viem").SimulateContractParameters<abi, functionName, args_1, Chain, chainOverride, accountOverride>) => Promise<import("viem").SimulateContractReturnType<abi, functionName, args_1, Chain, Account | undefined, chainOverride, accountOverride>>;
         verifyHash: (args: import("viem").VerifyHashActionParameters) => Promise<import("viem").VerifyHashActionReturnType>;
         verifyMessage: (args: import("viem").VerifyMessageActionParameters) => Promise<import("viem").VerifyMessageActionReturnType>;
         verifySiweMessage: (args: {
@@ -1749,5 +1759,7 @@ export declare class PrivateKeyRpcClient implements RpcClient {
         executor?: 'self';
     }): Promise<import("viem").SignAuthorizationReturnType>;
     private assertRpcChainMatches;
+    private toSendTransactionRequest;
 }
+export {};
 //# sourceMappingURL=private-key-rpc-client.d.ts.map

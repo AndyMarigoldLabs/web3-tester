@@ -1,5 +1,83 @@
 # Changelog
 
+## 0.4.2 — 2026-06-14 — release hardening
+
+Broad wallet ecosystem support and release hardening.
+
+### Added
+
+- Major-wallet personas and profiles for injected, EIP-6963, WalletConnect,
+  and Solana Wallet Standard discovery, including Rabby, Coinbase Wallet,
+  Phantom, Rainbow, OKX, Trust, Brave, Zerion, Backpack, Solflare, Ledger,
+  Trezor, Safe, and other common wallets.
+- Coinbase/Base Account simulation (`wallet_connect`, subaccounts, and spend
+  permission methods), deterministic Ledger/Trezor-style hardware-wallet
+  simulation, and software lock/unlock behavior across EVM, WalletConnect, and
+  Solana provider surfaces.
+- Safe support: Safe Transaction Service client, local Safe workflow harness,
+  Safe Apps bridge injection, EIP-712 Safe transaction hashing/signatures, and
+  MultiSendCallOnly encoding for batched Safe Apps transactions.
+- Generic real-wallet Chromium extension launcher/cache fixtures for
+  non-MetaMask adapters and custom Playwright control.
+- Benchmark helpers (`@marigoldlabs/web3-tester/benchmark`) plus
+  `npm run smoke:real-wallet -- --benchmark` for per-method timing diagnostics.
+- Focused `npm run test:browsers` Playwright matrix for the browser-portable
+  mock/live fixture surface across Chromium, Firefox, and WebKit.
+
+### Changed
+
+- Real-wallet smoke runs use the benchmarkable helper path, a fresh deterministic
+  seed phrase instead of Anvil's public mnemonic, pre-fund the active Anvil
+  account before MetaMask caches balances, route MetaMask's gas-fee service for
+  local chain `31337`, stub MetaMask's local-chain token/activity/tx-sentinel
+  cloud lookups, and default release smoke to wallet-side network setup while
+  leaving dapp-driven add-chain coverage available for targeted audits.
+- Real-wallet account helpers avoid heavyweight account-detail reads after
+  unlock, normalize cached MetaMask home tabs back to the wallet root, use fast
+  absent-state checks, open notification prompts immediately when MetaMask
+  suppresses popups, and search the account picker directly instead of waiting
+  through fixed multi-second account-tree dwell time.
+- WalletConnect session handlers now read the live approved-chain list after
+  wallet-driven namespace extension, and Safe App transaction details report
+  the Safe threshold as `confirmationsRequired`.
+- MetaMask 12.x account creation now dismisses the "what's new" overlay and
+  creates then renames named accounts to avoid the 12.23.1 duplicate-name
+  dialog regression.
+- `PrivateKeyRpcClient.eth_sendTransaction` now enforces `from` against the
+  client's local account and preserves RPC-shaped typed transaction fields
+  (`type`, `accessList`, blob fee/hash fields, and `authorizationList`) before
+  signing.
+- Removed the remaining `as never` casts from source and tests by tightening
+  WalletConnect listener, RPC adapter, auth-payload, and matcher test typing.
+- `WalletConnectWallet.create()` now accepts `customStoragePrefix` and assigns
+  a unique default prefix so in-process dapp/wallet SignClients do not share
+  the SDK's global Core instance.
+- `npm run verify` now also typechecks packaged examples; the
+  `@playwright/test` peer range is bounded to `<2`.
+- Real-wallet and generic real-extension fixtures now fail fast when used from
+  Firefox or WebKit projects instead of silently launching Chromium under a
+  non-Chromium Playwright project name.
+- Safe Transaction Service POST calls now handle empty successful responses by
+  refetching the transaction; MetaMask home-page reuse preserves hash-routed
+  tabs; Solana public-key `toBytes()` now returns decoded key bytes.
+
+### Validated
+
+- `npm run verify` passes with 233 hermetic tests and 12 env-gated skips.
+- `npm run test:browsers` passes with 87 tests across Chromium, Firefox, and
+  WebKit.
+- Pinned MetaMask 13.34.1 smoke passes (`11 passed` in 4.1m) with benchmarks
+  enabled; final full-suite max timings include `addNewAccount` 4.4s,
+  `switchAccount` 1.9s, `confirmTransaction` 3.7s, and
+  `confirmTransactionAndWaitForMining` 8.4s. Focused reruns after the
+  notification-path fix measured `confirmTransactionAndWaitForMining` at 4.3s,
+  with the Anvil activity confirmation itself taking about 0.5s.
+- Pinned MetaMask 12.23.1 smoke passes with the 12.x-only cases skipped
+  (`9 passed, 2 skipped`) and benchmarks enabled.
+- WalletConnect relay smoke passes when `WEB3_TESTER_WC_PROJECT_ID` is set.
+- `npm pack`, clean consumer install, public subpath TypeScript imports, secret
+  scan, and package artifact hygiene checks pass.
+
 ## 0.4.1 — 2026-06-11 — public release
 
 First public release on npm. No library behavior change from 0.4.0.

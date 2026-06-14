@@ -11,6 +11,17 @@ export type { DealErc20Options, Erc20SlotInfo, Erc20StorageLayout } from './erc2
 export { anyValue, web3Matchers } from './matchers.js';
 export type { BalanceChange, EventArgsExpectation, EventMatchOptions } from './matchers.js';
 export {
+  BenchmarkRecorder,
+  benchmarkEnabled,
+  benchmarkForTest,
+  benchmarkObjectMethods,
+  benchmarkOutputPath,
+  benchmarkStep,
+  createBenchmarkRecorder,
+  flushBenchmark,
+} from './benchmark.js';
+export type { BenchmarkMetadata, BenchmarkRecord, BenchmarkRecorderOptions } from './benchmark.js';
+export {
   extractRevertInfo,
   waitForDecodedTransaction,
   web3Equals,
@@ -28,6 +39,31 @@ export type {
 export { test, expect } from './fixtures.js';
 export { MockWalletController, httpRpcClient } from './mock-wallet-controller.js';
 export { PrivateKeyRpcClient } from './private-key-rpc-client.js';
+export {
+  createWalletPersona,
+  formatWalletConnectUriForPersona,
+  majorWalletPersonas,
+  mockWalletPersona,
+  walletConnectLinksForPersona,
+  walletConnectMetadataForPersona,
+  walletPersonas,
+  walletProfiles,
+} from './wallet-personas.js';
+export {
+  InMemorySafeTransactionService,
+  SAFE_MULTISEND_CALL_ONLY_ADDRESS,
+  SafeTransactionServiceClient,
+  SafeWalletHarness,
+  SAFE_TRANSACTION_TYPED_DATA_TYPES,
+  buildSafeTransactionTypedData,
+  buildSafeAppBridgeScript,
+  deterministicSafeSignature,
+  hashSafeTransactionData,
+  hashSafeTransactionTypedData,
+  handleSafeAppRequest,
+  injectSafeAppBridge,
+  normalizeSafeTransactionData,
+} from './safe.js';
 export { launchRealWallet, resolveRealWalletProfile } from './real-wallet.js';
 export {
   DEFAULT_METAMASK_VERSION,
@@ -35,10 +71,22 @@ export {
   extensionManifestVersion,
 } from './metamask-extension.js';
 export {
+  buildWalletExtensionProfile,
   buildWalletProfile,
   cloneWalletProfile,
   waitForExtensionStatePersisted,
 } from './real-wallet-cache.js';
+export {
+  discoverRealWalletExtensionId,
+  extensionIdFromUrl,
+  extensionManifestDefaultPage,
+  extensionManifestName,
+  extensionPageUrl,
+  launchRealWalletExtension,
+  openRealWalletExtensionPage,
+  readExtensionManifest,
+  resolveExtensionPageUrl,
+} from './real-wallet-extension.js';
 export { DEFAULT_WALLET_PASSWORD } from './real-wallet-setup.js';
 export type {
   AnvilOptions,
@@ -56,19 +104,55 @@ export type {
   AtomicCapabilityStatus,
   CallsBatchRecord,
   ChainBackend,
+  CoinbasePermission,
+  CoinbaseSpendPermission,
+  CoinbaseSubAccount,
+  CoinbaseWalletSimulationOptions,
   Eip5792Options,
+  HardwareWalletDeviceState,
+  HardwareWalletSimulationOptions,
   HeldRequest,
   HttpRpcClientOptions,
   MockWalletControllerOptions,
   RejectionRule,
   SentTransactionRecord,
+  WatchedAssetRecord,
 } from './mock-wallet-controller.js';
 export type {
   JsonRpcRequest,
   MockWalletConfig,
   RpcClient,
+  SolanaProviderIdentity,
+  WalletProviderIdentity,
   WalletProviderInfo,
 } from './types.js';
+export type {
+  WalletConnectLinkTarget,
+  WalletConnectPersonaLinks,
+  WalletConnectPersonaMetadata,
+  CoinbaseWalletProfileOptions,
+  WalletControllerProfile,
+  WalletProfileOptions,
+  HardwareWalletProfileOptions,
+  WalletPersona,
+  WalletPersonaInput,
+} from './wallet-personas.js';
+export type {
+  SafeAppBridgeOptions,
+  SafeAppSdkRequest,
+  NormalizedSafeTransactionData,
+  SafeMultisigTransaction,
+  SafeOperation,
+  SafeTransactionHashStrategy,
+  SafeTransactionConfirmation,
+  SafeTransactionData,
+  SafeTransactionProposal,
+  SafeTransactionService,
+  SafeTransactionServiceClientOptions,
+  SafeTransactionTypedData,
+  SafeTransactionTypedDataMessage,
+  SafeWalletHarnessOptions,
+} from './safe.js';
 export type { PrivateKeyRpcClientOptions } from './private-key-rpc-client.js';
 export type {
   RealWalletController,
@@ -81,6 +165,18 @@ export type {
   RealWalletToken,
   WalletGeneration,
 } from './real-wallet.js';
+export type {
+  BrowserExtensionManifest,
+  RealWalletExtensionLaunchOptions,
+  RealWalletExtensionSession,
+} from './real-wallet-extension.js';
 export type { PrepareMetaMaskExtensionOptions } from './metamask-extension.js';
-export type { BuildWalletProfileOptions } from './real-wallet-cache.js';
+export type {
+  BuildWalletExtensionProfileOptions,
+  BuildWalletProfileOptions,
+} from './real-wallet-cache.js';
+export type {
+  RealWalletExtensionFixtureOptions,
+  RealWalletExtensionFixtures,
+} from './real-wallet-extension-fixtures.js';
 export type { RealWalletFixtureOptions, RealWalletFixtures } from './real-wallet-fixtures.js';

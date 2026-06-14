@@ -36,6 +36,11 @@ The injected provider implements the wallet behavior expected by most dApps:
 
 The injected script is installed with `page.addInitScript`, so it exists before the application bundle executes. It is also evaluated immediately for pages that have already loaded.
 
+Because the mock/live fixture families use Playwright's active browser
+project rather than launching their own browser, this injection path is
+portable across Chromium, Firefox, and WebKit. Real wallet extension fixtures
+are the exception: Chrome extensions require a persistent Chromium context.
+
 ## RPC Boundary
 
 Browser code cannot access Node objects directly. The harness uses a

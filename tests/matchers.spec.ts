@@ -4,6 +4,7 @@ import { foundry } from 'viem/chains';
 import { expect, test } from '../src/fixtures.js';
 import { anyValue } from '../src/matchers.js';
 import { PrivateKeyRpcClient } from '../src/private-key-rpc-client.js';
+import type { ReadClient } from '../src/transactions.js';
 import {
   EVENT_EMITTER_ABI,
   EVENT_EMITTER_BYTECODE,
@@ -29,7 +30,7 @@ test.describe('toEmitEvent', () => {
     wallet,
   }) => {
     const emitter = await chain.deployContract({
-      abi: EVENT_EMITTER_ABI as never,
+      abi: EVENT_EMITTER_ABI,
       bytecode: EVENT_EMITTER_BYTECODE,
     });
     await page.setContent('<main>emit</main>');
@@ -40,19 +41,19 @@ test.describe('toEmitEvent', () => {
       data: encodeFunctionData({ abi: EVENT_EMITTER_ABI, functionName: 'ping', args: [7n, 'hi'] }),
     });
 
-    await expect(pending).toEmitEvent(chain, EVENT_EMITTER_ABI as never, 'Ping', {
+    await expect(pending).toEmitEvent(chain, EVENT_EMITTER_ABI, 'Ping', {
       args: { sender: wallet.primaryAccount, id: 7, note: 'hi' },
     });
 
     const hash = wallet.sentTransactions[0]!;
-    await expect(hash).toEmitEvent(chain, EVENT_EMITTER_ABI as never, 'Ping', {
+    await expect(hash).toEmitEvent(chain, EVENT_EMITTER_ABI, 'Ping', {
       args: [wallet.primaryAccount.toUpperCase().replace('0X', '0x') as Hex, undefined, 'hi'],
     });
-    await expect(hash).toEmitEvent(chain, EVENT_EMITTER_ABI as never, 'Ping', {
+    await expect(hash).toEmitEvent(chain, EVENT_EMITTER_ABI, 'Ping', {
       args: { id: (value: unknown) => value === 7n, note: anyValue },
       address: emitter.address,
     });
-    await expect(hash).not.toEmitEvent(chain, EVENT_EMITTER_ABI as never, 'Ping', {
+    await expect(hash).not.toEmitEvent(chain, EVENT_EMITTER_ABI, 'Ping', {
       args: { id: 999 },
     });
 
@@ -65,15 +66,15 @@ test.describe('toEmitEvent', () => {
         args: [1n, 'x'],
       }),
     });
-    await expect(twice as Hex).toEmitEvent(chain, EVENT_EMITTER_ABI as never, 'Ping', { count: 2 });
-    await expect(twice as Hex).not.toEmitEvent(chain, EVENT_EMITTER_ABI as never, 'Ping', {
+    await expect(twice as Hex).toEmitEvent(chain, EVENT_EMITTER_ABI, 'Ping', { count: 2 });
+    await expect(twice as Hex).not.toEmitEvent(chain, EVENT_EMITTER_ABI, 'Ping', {
       count: 1,
     });
   });
 
   test('failure message lists the actually-emitted events', async ({ page, chain, wallet }) => {
     const emitter = await chain.deployContract({
-      abi: EVENT_EMITTER_ABI as never,
+      abi: EVENT_EMITTER_ABI,
       bytecode: EVENT_EMITTER_BYTECODE,
     });
     await page.setContent('<main>emit</main>');
@@ -85,7 +86,7 @@ test.describe('toEmitEvent', () => {
 
     let thrown: Error | undefined;
     try {
-      await expect(hash).toEmitEvent(chain, EVENT_EMITTER_ABI as never, 'Ping', {
+      await expect(hash).toEmitEvent(chain, EVENT_EMITTER_ABI, 'Ping', {
         args: { id: 999 },
         timeout: 2_000,
       });
@@ -99,7 +100,7 @@ test.describe('toEmitEvent', () => {
   test('a non-hash receiver fails with a clear message', async ({ chain }) => {
     let thrown: Error | undefined;
     try {
-      await expect('0x1234' as Hex).toEmitEvent(chain, EVENT_EMITTER_ABI as never, 'Ping');
+      await expect('0x1234' as Hex).toEmitEvent(chain, EVENT_EMITTER_ABI, 'Ping');
     } catch (error) {
       thrown = error as Error;
     }
@@ -165,8 +166,12 @@ test.describe('token matchers', () => {
     await expect(RECIPIENT).not.toHaveTokenBalance(chain, token.address, 9n);
 
     // ChainLike polymorphism: ChainController, bare viem client, { client }.
-    await expect(RECIPIENT).toHaveTokenBalance(chain.client as never, token.address, 250n);
-    await expect(RECIPIENT).toHaveTokenBalance({ client: chain.client } as never, token.address, 250n);
+    await expect(RECIPIENT).toHaveTokenBalance(chain.client as unknown as ReadClient, token.address, 250n);
+    await expect(RECIPIENT).toHaveTokenBalance(
+      { client: chain.client as unknown as ReadClient },
+      token.address,
+      250n,
+    );
 
     // expect.poll re-reads each attempt — the eventual-consistency pattern.
     await expect.poll(() => RECIPIENT).toHaveTokenBalance(chain, token.address, 250n);
@@ -189,36 +194,48 @@ test.describe('revert matchers', () => {
     chain,
   }) => {
     const reverter = await chain.deployContract({
-      abi: REVERTER_ABI as never,
+      abi: REVERTER_ABI,
       bytecode: REVERTER_BYTECODE,
     });
     const [account] = await chain.accounts();
-    const write = (functionName: string, args: readonly unknown[] = []) =>
-      chain.client.writeContract({
-        address: reverter.address,
-        abi: REVERTER_ABI as never,
-        functionName,
-        args,
-        account: account!,
-        chain: chain.client.chain,
-      } as never);
+    const sendReverterTx = (data: Hex) =>
+      chain.request({
+        method: 'eth_sendTransaction',
+        params: [{ from: account, to: reverter.address, data }],
+      });
+    const writeRevertWithReason = () =>
+      sendReverterTx(encodeFunctionData({
+        abi: REVERTER_ABI,
+        functionName: 'revertWithReason',
+      }));
+    const writeRevertWithCustom = (requested: bigint) =>
+      sendReverterTx(encodeFunctionData({
+        abi: REVERTER_ABI,
+        functionName: 'revertWithCustom',
+        args: [requested],
+      }));
+    const writePanicWithAssert = () =>
+      sendReverterTx(encodeFunctionData({
+        abi: REVERTER_ABI,
+        functionName: 'panicWithAssert',
+      }));
 
-    await expect(write('revertWithReason')).toBeReverted(chain);
-    await expect(write('revertWithReason')).toBeRevertedWith(chain, 'boom');
-    await expect(write('revertWithReason')).toBeRevertedWith(chain, /boo/);
-    await expect(write('revertWithCustom', [150n])).toBeRevertedWithCustomError(
+    await expect(writeRevertWithReason()).toBeReverted(chain);
+    await expect(writeRevertWithReason()).toBeRevertedWith(chain, 'boom');
+    await expect(writeRevertWithReason()).toBeRevertedWith(chain, /boo/);
+    await expect(writeRevertWithCustom(150n)).toBeRevertedWithCustomError(
       chain,
-      REVERTER_ABI as never,
+      REVERTER_ABI,
       'CapExceeded',
       { args: [150n, 100n] },
     );
-    await expect(write('panicWithAssert')).toBeRevertedWithPanic(chain, 0x01);
-    await expect(write('panicWithAssert')).toBeRevertedWithPanic(chain);
+    await expect(writePanicWithAssert()).toBeRevertedWithPanic(chain, 0x01);
+    await expect(writePanicWithAssert()).toBeRevertedWithPanic(chain);
 
     // Wrong reason fails with the actual decoded reason in the message.
     let thrown: Error | undefined;
     try {
-      await expect(write('revertWithReason')).toBeRevertedWith(chain, 'not-boom');
+      await expect(writeRevertWithReason()).toBeRevertedWith(chain, 'not-boom');
     } catch (error) {
       thrown = error as Error;
     }
@@ -229,7 +246,7 @@ test.describe('revert matchers', () => {
     chain,
   }) => {
     const reverter = await chain.deployContract({
-      abi: REVERTER_ABI as never,
+      abi: REVERTER_ABI,
       bytecode: REVERTER_BYTECODE,
     });
     const [account] = await chain.accounts();
@@ -250,24 +267,24 @@ test.describe('revert matchers', () => {
     await expect(hash).toBeReverted(chain);
     await expect(hash).toBeRevertedWith(chain, 'boom');
 
-    const decoded = await chain.waitForTransaction(hash, { abi: REVERTER_ABI as never });
+    const decoded = await chain.waitForTransaction(hash, { abi: REVERTER_ABI });
     expect(decoded.status).toBe('reverted');
     expect(decoded.revertReason).toBe('boom');
   });
 
   test('successful transactions fail the revert matchers (and pass .not)', async ({ chain }) => {
     const reverter = await chain.deployContract({
-      abi: REVERTER_ABI as never,
+      abi: REVERTER_ABI,
       bytecode: REVERTER_BYTECODE,
     });
     const [account] = await chain.accounts();
     const hash = await chain.client.writeContract({
       address: reverter.address,
-      abi: REVERTER_ABI as never,
+      abi: REVERTER_ABI,
       functionName: 'succeed',
       account: account!,
       chain: chain.client.chain,
-    } as never);
+    });
 
     await expect(hash).not.toBeReverted(chain);
 

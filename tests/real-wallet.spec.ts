@@ -1,8 +1,18 @@
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { expect, test, type Locator } from '@playwright/test';
-import { cloneWalletProfile } from '../src/real-wallet-cache.js';
+import { chromium, expect, test, type BrowserContext, type Locator } from '@playwright/test';
+import { buildWalletExtensionProfile, cloneWalletProfile } from '../src/real-wallet-cache.js';
+import {
+  extensionIdFromUrl,
+  extensionManifestDefaultPage,
+  extensionManifestName,
+  extensionPageUrl,
+  launchRealWalletExtension,
+  openRealWalletExtensionPage,
+  readExtensionManifest,
+  resolveExtensionPageUrl,
+} from '../src/real-wallet-extension.js';
 import { DEFAULT_WALLET_PASSWORD, passwordForSetup } from '../src/real-wallet-setup.js';
 import {
   resolveGenLocators,
@@ -27,6 +37,164 @@ test('resolveRealWalletProfile maps Chrome profile directories to user data root
     profileDirectory: 'Profile 1',
     userDataDir,
   });
+});
+
+test('real-wallet-extension helpers read manifests and resolve extension pages', () => {
+  const extensionDir = fs.mkdtempSync(path.join(os.tmpdir(), 'web3-tester-extension-'));
+  fs.writeFileSync(
+    path.join(extensionDir, 'manifest.json'),
+    JSON.stringify({
+      manifest_version: 3,
+      name: 'Rabby Wallet',
+      version: '1.0.0',
+      action: { default_popup: 'popup.html' },
+    }),
+  );
+
+  const manifest = readExtensionManifest(extensionDir);
+  expect(manifest.name).toBe('Rabby Wallet');
+  expect(extensionManifestName(extensionDir)).toBe('Rabby Wallet');
+  expect(extensionManifestDefaultPage(manifest)).toBe('popup.html');
+  expect(extensionPageUrl('abcdefghijklmnop', 'popup.html')).toBe(
+    'chrome-extension://abcdefghijklmnop/popup.html',
+  );
+  expect(extensionPageUrl('abcdefghijklmnop', '/popup.html')).toBe(
+    'chrome-extension://abcdefghijklmnop/popup.html',
+  );
+  expect(extensionIdFromUrl('chrome-extension://abcdefghijklmnop/popup.html')).toBe(
+    'abcdefghijklmnop',
+  );
+  expect(resolveExtensionPageUrl('abcdefghijklmnop', 'chrome-extension://other/page.html')).toBe(
+    'chrome-extension://other/page.html',
+  );
+});
+
+test('root entry re-exports real-wallet-extension helpers', async () => {
+  const root = await import('../src/index.js');
+
+  expect(root.extensionIdFromUrl('chrome-extension://abcdefghijklmnop/popup.html')).toBe(
+    'abcdefghijklmnop',
+  );
+});
+
+test('extensionManifestName returns undefined for localized manifest message names', () => {
+  const extensionDir = fs.mkdtempSync(path.join(os.tmpdir(), 'web3-tester-extension-i18n-'));
+  fs.writeFileSync(
+    path.join(extensionDir, 'manifest.json'),
+    JSON.stringify({
+      manifest_version: 3,
+      name: '__MSG_appName__',
+      version: '1.0.0',
+      options_ui: { page: 'options.html' },
+    }),
+  );
+
+  expect(extensionManifestName(extensionDir)).toBeUndefined();
+  expect(extensionManifestDefaultPage(readExtensionManifest(extensionDir))).toBe('options.html');
+});
+
+test('launchRealWalletExtension closes context when extension discovery fails', async () => {
+  const extensionDir = fs.mkdtempSync(path.join(os.tmpdir(), 'web3-tester-extension-discovery-'));
+  const profileDir = fs.mkdtempSync(path.join(os.tmpdir(), 'web3-tester-profile-discovery-'));
+  fs.writeFileSync(
+    path.join(extensionDir, 'manifest.json'),
+    JSON.stringify({
+      manifest_version: 3,
+      name: '__MSG_appName__',
+      version: '1.0.0',
+    }),
+  );
+
+  let closed = false;
+  const context = {
+    serviceWorkers: () => [],
+    pages: () => [],
+    waitForEvent: async () => {
+      throw new Error('timed out waiting for service worker');
+    },
+    close: async () => {
+      closed = true;
+    },
+  } as unknown as BrowserContext;
+  const launcher = chromium as unknown as {
+    launchPersistentContext: typeof chromium.launchPersistentContext;
+  };
+  const originalLaunchPersistentContext = launcher.launchPersistentContext;
+  launcher.launchPersistentContext = async () => context;
+
+  try {
+    await expect(
+      launchRealWalletExtension({
+        extensionPath: extensionDir,
+        headless: true,
+        initialPage: false,
+        profileDir,
+      }),
+    ).rejects.toThrow(/Pass extensionName or extensionId/);
+    expect(closed).toBe(true);
+  } finally {
+    launcher.launchPersistentContext = originalLaunchPersistentContext;
+  }
+});
+
+test('openRealWalletExtensionPage reuses hash-routed extension tabs', async () => {
+  const gotos: string[] = [];
+  let newPages = 0;
+  let currentUrl = 'chrome-extension://abcdefghijklmnop/home.html#/';
+  const page = {
+    isClosed: () => false,
+    url: () => currentUrl,
+    goto: async (url: string) => {
+      gotos.push(url);
+      currentUrl = url;
+    },
+    waitForLoadState: async () => undefined,
+  };
+  const context = {
+    pages: () => [page],
+    newPage: async () => {
+      newPages += 1;
+      return page;
+    },
+  };
+
+  const result = await openRealWalletExtensionPage(
+    context as unknown as Parameters<typeof openRealWalletExtensionPage>[0],
+    'abcdefghijklmnop',
+    'home.html',
+  );
+
+  expect(result).toBe(page);
+  expect(gotos).toEqual(['chrome-extension://abcdefghijklmnop/home.html']);
+  expect(newPages).toBe(0);
+});
+
+test('buildWalletExtensionProfile requires a stable non-empty cache key', async () => {
+  const extensionDir = fs.mkdtempSync(path.join(os.tmpdir(), 'web3-tester-extension-cache-'));
+  fs.writeFileSync(
+    path.join(extensionDir, 'manifest.json'),
+    JSON.stringify({
+      manifest_version: 3,
+      name: 'Custom Wallet',
+      version: '1.0.0',
+      action: { default_popup: 'popup.html' },
+    }),
+  );
+
+  await expect(
+    buildWalletExtensionProfile({
+      cacheKey: '   ',
+      extensionPath: extensionDir,
+      headless: false,
+    }),
+  ).rejects.toThrow(/non-empty cacheKey/);
+});
+
+test('real-wallet-extension fixtures export a Playwright test and web3 expect', async () => {
+  const module = await import('../src/real-wallet-extension-fixtures.js');
+
+  expect(module.test).toBeTruthy();
+  expect(module.expect).toBeTruthy();
 });
 
 test('passwordForSetup uses explicit wallet password when provided', () => {

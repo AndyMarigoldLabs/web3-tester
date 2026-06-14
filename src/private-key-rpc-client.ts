@@ -3,13 +3,16 @@ import {
   createWalletClient,
   http,
   isAddress,
+  type AccessList,
   type Account,
+  type Address,
   type Chain,
   type Hex,
   type WalletClient,
 } from 'viem';
 import { privateKeyToAccount } from 'viem/accounts';
 import { sepolia } from 'viem/chains';
+import { providerError } from './errors.js';
 import type { JsonRpcRequest, RpcClient } from './types.js';
 
 export type PrivateKeyRpcClientOptions = {
@@ -45,6 +48,121 @@ const normalizeMessage = (message: unknown): string | { raw: Hex } => {
 
 const parseParams = (request: JsonRpcRequest): unknown[] =>
   Array.isArray(request.params) ? [...request.params] : [];
+
+type KnownTransactionType = 'legacy' | 'eip2930' | 'eip1559' | 'eip4844' | 'eip7702';
+
+type ParsedSendTransactionRequest = {
+  account: Account;
+  accessList?: AccessList;
+  authorizationList?: ReturnType<typeof parseAuthorizationList>;
+  blobVersionedHashes?: readonly Hex[];
+  blobs?: readonly Hex[];
+  chain: Chain;
+  data?: Hex;
+  gas?: bigint;
+  gasPrice?: bigint;
+  maxFeePerBlobGas?: bigint;
+  maxFeePerGas?: bigint;
+  maxPriorityFeePerGas?: bigint;
+  nonce?: number;
+  to?: Address | null;
+  type?: KnownTransactionType;
+  value?: bigint;
+};
+
+const isRecord = (value: unknown): value is Record<string, unknown> =>
+  typeof value === 'object' && value !== null && !Array.isArray(value);
+
+const parseAddressField = (value: unknown, field: string): Address | undefined => {
+  if (value === undefined) return undefined;
+  if (typeof value === 'string' && isAddress(value)) return value;
+  throw new Error(`${field} must be a valid address.`);
+};
+
+const parseNullableAddressField = (value: unknown, field: string): Address | null | undefined => {
+  if (value === null) return null;
+  return parseAddressField(value, field);
+};
+
+const parseHexField = (value: unknown, field: string): Hex | undefined => {
+  if (value === undefined) return undefined;
+  if (typeof value === 'string' && value.startsWith('0x')) return value as Hex;
+  throw new Error(`${field} must be a 0x-prefixed hex string.`);
+};
+
+const parseHexArrayField = (value: unknown, field: string): readonly Hex[] | undefined => {
+  if (value === undefined) return undefined;
+  if (!Array.isArray(value)) throw new Error(`${field} must be an array.`);
+  return value.map((entry, index) => {
+    if (typeof entry === 'string' && entry.startsWith('0x')) return entry as Hex;
+    throw new Error(`${field}[${index}] must be a 0x-prefixed hex string.`);
+  });
+};
+
+const parseQuantity = (value: unknown, field: string): bigint | undefined => {
+  if (value === undefined) return undefined;
+  if (typeof value === 'bigint') return value;
+  if (typeof value === 'number' && Number.isSafeInteger(value) && value >= 0) return BigInt(value);
+  if (typeof value === 'string') {
+    try {
+      return BigInt(value);
+    } catch {
+      // Fall through to the shared error below.
+    }
+  }
+  throw new Error(`${field} must be a non-negative integer, bigint, decimal string, or 0x-hex quantity.`);
+};
+
+const parseIndex = (value: unknown, field: string): number | undefined => {
+  const quantity = parseQuantity(value, field);
+  if (quantity === undefined) return undefined;
+  const parsed = Number(quantity);
+  if (!Number.isSafeInteger(parsed)) throw new Error(`${field} is too large to fit in a JavaScript number.`);
+  return parsed;
+};
+
+const parseChainId = (value: unknown): number | undefined => parseIndex(value, 'chainId');
+
+const transactionTypeAliases: Record<string, KnownTransactionType> = {
+  '0x0': 'legacy',
+  '0x1': 'eip2930',
+  '0x2': 'eip1559',
+  '0x3': 'eip4844',
+  '0x4': 'eip7702',
+  legacy: 'legacy',
+  eip2930: 'eip2930',
+  eip1559: 'eip1559',
+  eip4844: 'eip4844',
+  eip7702: 'eip7702',
+};
+
+const parseTransactionType = (value: unknown): KnownTransactionType | undefined => {
+  if (value === undefined) return undefined;
+  if (typeof value !== 'string') throw new Error('type must be a transaction type string.');
+  const normalized = value.toLowerCase();
+  const type = transactionTypeAliases[normalized];
+  if (!type) {
+    throw new Error(
+      `Unsupported transaction type "${value}". Expected legacy/eip2930/eip1559/eip4844/eip7702 or 0x0-0x4.`,
+    );
+  }
+  return type;
+};
+
+const parseAccessList = (value: unknown): AccessList | undefined => {
+  if (value === undefined) return undefined;
+  if (!Array.isArray(value)) throw new Error('accessList must be an array.');
+  return value.map((entry, index) => {
+    if (!isRecord(entry)) throw new Error(`accessList[${index}] must be an object.`);
+    const address = parseAddressField(entry.address, `accessList[${index}].address`);
+    if (!address) throw new Error(`accessList[${index}].address is required.`);
+    const storageKeys = parseHexArrayField(entry.storageKeys, `accessList[${index}].storageKeys`);
+    return {
+      address,
+      storageKeys: storageKeys ?? [],
+    };
+  });
+};
 
 // Dapp-supplied authorization entries are RPC-shaped (hex chainId/nonce/
 // yParity) while viem's sendTransaction expects numbers — a silent
@@ -92,9 +210,18 @@ export class PrivateKeyRpcClient implements RpcClient {
   readonly chain: Chain;
   readonly sentTransactions: Hex[] = [];
   readonly sentTransactionRequests: Array<{
+    accessList?: AccessList;
+    from?: Address;
+    gas?: string;
+    gasPrice?: string;
     hash: Hex;
-    to?: Hex;
+    maxFeePerBlobGas?: string;
+    maxFeePerGas?: string;
+    maxPriorityFeePerGas?: string;
+    nonce?: number;
+    to?: Address | null;
     data?: Hex;
+    type?: KnownTransactionType;
     value?: string;
   }> = [];
 
@@ -187,7 +314,9 @@ export class PrivateKeyRpcClient implements RpcClient {
       // default passthrough.
       case 'eth_sendRawTransaction': {
         await this.assertRpcChainMatches();
-        const hash = (await this.publicClient.request(request as never)) as Hex;
+        const hash = (await this.publicClient.request(
+          request as Parameters<typeof this.publicClient.request>[0],
+        )) as Hex;
         this.sentTransactions.push(hash);
         this.sentTransactionRequests.push({ hash });
         return hash;
@@ -200,38 +329,34 @@ export class PrivateKeyRpcClient implements RpcClient {
         }
 
         await this.assertRpcChainMatches();
+        const request = this.toSendTransactionRequest(transaction);
 
-        const request = {
-          account: this.account,
-          chain: this.chain,
-          to: transaction.to as Hex | undefined,
-          data: transaction.data as Hex | undefined,
-          value: transaction.value ? BigInt(transaction.value as string) : undefined,
-          gas: transaction.gas ? BigInt(transaction.gas as string) : undefined,
-          gasPrice: transaction.gasPrice ? BigInt(transaction.gasPrice as string) : undefined,
-          nonce: transaction.nonce ? Number(BigInt(transaction.nonce as string)) : undefined,
-          maxFeePerGas: transaction.maxFeePerGas
-            ? BigInt(transaction.maxFeePerGas as string)
-            : undefined,
-          maxPriorityFeePerGas: transaction.maxPriorityFeePerGas
-            ? BigInt(transaction.maxPriorityFeePerGas as string)
-            : undefined,
-          authorizationList: parseAuthorizationList(transaction.authorizationList),
-        };
-
-        const hash = await this.walletClient.sendTransaction(request as never);
+        const hash = await this.walletClient.sendTransaction(
+          request as Parameters<WalletClient['sendTransaction']>[0],
+        );
         this.sentTransactions.push(hash);
         this.sentTransactionRequests.push({
+          accessList: request.accessList,
+          from: this.account.address,
+          gas: request.gas?.toString(),
+          gasPrice: request.gasPrice?.toString(),
           hash,
-          to: transaction.to as Hex | undefined,
-          data: transaction.data as Hex | undefined,
-          value: transaction.value ? String(transaction.value) : undefined,
+          maxFeePerBlobGas: request.maxFeePerBlobGas?.toString(),
+          maxFeePerGas: request.maxFeePerGas?.toString(),
+          maxPriorityFeePerGas: request.maxPriorityFeePerGas?.toString(),
+          nonce: request.nonce,
+          to: request.to,
+          data: request.data,
+          type: request.type,
+          value: request.value?.toString(),
         });
         return hash;
       }
 
       default:
-        return this.publicClient.request(request as never);
+        return this.publicClient.request(
+          request as Parameters<typeof this.publicClient.request>[0],
+        );
     }
   }
 
@@ -253,7 +378,7 @@ export class PrivateKeyRpcClient implements RpcClient {
       chainId: options.chainId,
       nonce: options.nonce,
       executor: options.executor,
-    } as never);
+    } as Parameters<WalletClient['signAuthorization']>[0]);
   }
 
   // A mismatched rpcUrl/chain pair must fail loudly before anything is
@@ -273,5 +398,43 @@ export class PrivateKeyRpcClient implements RpcClient {
     }
 
     this.rpcChainVerified = true;
+  }
+
+  private toSendTransactionRequest(
+    transaction: Record<string, unknown>,
+  ): ParsedSendTransactionRequest {
+    const from = parseAddressField(transaction.from, 'from');
+    if (from && from.toLowerCase() !== this.account.address.toLowerCase()) {
+      throw providerError(
+        4100,
+        `eth_sendTransaction requested from ${from}, but this PrivateKeyRpcClient only controls ${this.account.address}.`,
+      );
+    }
+
+    const chainId = parseChainId(transaction.chainId);
+    if (chainId !== undefined && chainId !== this.chain.id) {
+      throw new Error(
+        `eth_sendTransaction chainId ${chainId} does not match configured chain "${this.chain.name}" (id ${this.chain.id}).`,
+      );
+    }
+
+    return {
+      account: this.account,
+      accessList: parseAccessList(transaction.accessList),
+      authorizationList: parseAuthorizationList(transaction.authorizationList),
+      blobVersionedHashes: parseHexArrayField(transaction.blobVersionedHashes, 'blobVersionedHashes'),
+      blobs: parseHexArrayField(transaction.blobs, 'blobs'),
+      chain: this.chain,
+      data: parseHexField(transaction.data ?? transaction.input, 'data'),
+      gas: parseQuantity(transaction.gas, 'gas'),
+      gasPrice: parseQuantity(transaction.gasPrice, 'gasPrice'),
+      maxFeePerBlobGas: parseQuantity(transaction.maxFeePerBlobGas, 'maxFeePerBlobGas'),
+      maxFeePerGas: parseQuantity(transaction.maxFeePerGas, 'maxFeePerGas'),
+      maxPriorityFeePerGas: parseQuantity(transaction.maxPriorityFeePerGas, 'maxPriorityFeePerGas'),
+      nonce: parseIndex(transaction.nonce, 'nonce'),
+      to: parseNullableAddressField(transaction.to, 'to'),
+      type: parseTransactionType(transaction.type),
+      value: parseQuantity(transaction.value, 'value'),
+    };
   }
 }

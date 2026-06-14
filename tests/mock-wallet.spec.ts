@@ -1,8 +1,17 @@
-import { parseEther, verifyMessage, verifyTypedData, type Hex } from 'viem';
+import { parseEther, verifyMessage, verifyTypedData, type Address, type Hex } from 'viem';
 import { expect, test } from '../src/fixtures.js';
-import { MockWalletController } from '../src/mock-wallet-controller.js';
+import { MockWalletController, type CoinbasePermission } from '../src/mock-wallet-controller.js';
+import { walletProfiles } from '../src/wallet-personas.js';
 
 const RECIPIENT = '0x000000000000000000000000000000000000beef' as const;
+const COINBASE_SPENDER = '0x000000000000000000000000000000000000cafe' as const;
+const COINBASE_OTHER_SPENDER = '0x000000000000000000000000000000000000f00d' as const;
+const COINBASE_TOKEN = '0x0000000000000000000000000000000000000001' as const;
+const COINBASE_SUB_ACCOUNT = '0x000000000000000000000000000000000000b0b0' as const;
+const COINBASE_FACTORY = '0x000000000000000000000000000000000000fac7' as const;
+const COINBASE_PERMISSION_HASH_1 = `0x${'11'.repeat(32)}` as Hex;
+const COINBASE_PERMISSION_HASH_2 = `0x${'22'.repeat(32)}` as Hex;
+const COINBASE_PERMISSION_HASH_3 = `0x${'33'.repeat(32)}` as Hex;
 
 type ProviderErrorShape = { code: number; message: string };
 
@@ -19,6 +28,28 @@ const requestFromPage = (page: import('@playwright/test').Page, method: string, 
     },
     { method, params },
   );
+
+const coinbasePermission = (
+  account: Address,
+  spender: Address,
+  permissionHash: Hex,
+  createdAt: number,
+): CoinbasePermission => ({
+  createdAt,
+  permissionHash,
+  signature: `0x${'aa'.repeat(65)}`,
+  spendPermission: {
+    account,
+    spender,
+    token: COINBASE_TOKEN,
+    allowance: '1000000000000000000',
+    period: 86_400,
+    start: 1_640_995_200,
+    end: 4_102_444_800,
+    salt: String(createdAt),
+    extraData: '0x',
+  },
+});
 
 test.describe('transactions through the injected wallet', () => {
   test('eth_sendTransaction reaches anvil, moves funds, and is recorded', async ({ page, chain, wallet }) => {
@@ -115,11 +146,15 @@ test.describe('chain management', () => {
     expect(wallet.currentChainId).toBe(before);
   });
 
-  test('wallet_addEthereumChain registers the chain, switches, and emits chainChanged', async ({ page, wallet }) => {
+  test('wallet_addEthereumChain registers the chain, switches, and emits chainChanged/networkChanged', async ({ page, wallet }) => {
     await page.evaluate(() => {
       (window as { __chainEvents?: unknown[] }).__chainEvents = [];
+      (window as { __networkEvents?: unknown[] }).__networkEvents = [];
       window.ethereum.on('chainChanged', (chainId: unknown) => {
         (window as unknown as { __chainEvents: unknown[] }).__chainEvents.push(chainId);
+      });
+      window.ethereum.on('networkChanged', (networkId: unknown) => {
+        (window as unknown as { __networkEvents: unknown[] }).__networkEvents.push(networkId);
       });
     });
 
@@ -138,6 +173,11 @@ test.describe('chain management', () => {
     await expect
       .poll(() => page.evaluate(() => (window as unknown as { __chainEvents: unknown[] }).__chainEvents))
       .toContain('0xaa36a7');
+    await expect
+      .poll(() =>
+        page.evaluate(() => (window as unknown as { __networkEvents: unknown[] }).__networkEvents),
+      )
+      .toContain('11155111');
     expect(await page.evaluate(() => window.ethereum.chainId)).toBe('0xaa36a7');
     expect(await page.evaluate(() => window.ethereum.networkVersion)).toBe('11155111');
   });
@@ -202,7 +242,24 @@ test.describe('chain management', () => {
 });
 
 test.describe('connection lifecycle', () => {
-  test('wallet_revokePermissions disconnects and empties eth_accounts', async ({ page, wallet }) => {
+  test('wallet_revokePermissions revokes accounts without a chain disconnect', async ({
+    page,
+    wallet,
+  }) => {
+    await page.evaluate(() => {
+      const state = {
+        accountEvents: [] as unknown[],
+        disconnectEvents: [] as unknown[],
+      };
+      window.ethereum.on('accountsChanged', (accounts: unknown) => {
+        state.accountEvents.push(accounts);
+      });
+      window.ethereum.on('disconnect', (event: unknown) => {
+        state.disconnectEvents.push(event);
+      });
+      (window as unknown as { __revokeState: typeof state }).__revokeState = state;
+    });
+
     const revoked = await requestFromPage(page, 'wallet_revokePermissions', [
       { eth_accounts: {} },
     ]);
@@ -210,7 +267,112 @@ test.describe('connection lifecycle', () => {
 
     const accounts = await requestFromPage(page, 'eth_accounts');
     expect(accounts.ok ? accounts.result : undefined).toEqual([]);
+    expect(await page.evaluate(() => window.ethereum.isConnected())).toBe(true);
+    expect(
+      await page.evaluate(() => (window as unknown as { __revokeState: unknown }).__revokeState),
+    ).toEqual({
+      accountEvents: [[]],
+      disconnectEvents: [],
+    });
     void wallet;
+  });
+
+  test('wallet_requestPermissions reconnects only for supported permissions', async ({
+    page,
+    wallet,
+  }) => {
+    await wallet.disconnect();
+
+    const unsupported = await requestFromPage(page, 'wallet_requestPermissions', [
+      { wallet_snap: {} },
+    ]);
+    expect(unsupported.ok).toBe(false);
+    expect((unsupported as { error: ProviderErrorShape }).error).toMatchObject({
+      code: 4200,
+      message: 'The mock wallet does not support permission "wallet_snap".',
+    });
+    const afterUnsupported = await requestFromPage(page, 'eth_accounts');
+    expect(afterUnsupported.ok ? afterUnsupported.result : undefined).toEqual([]);
+
+    const requested = await requestFromPage(page, 'wallet_requestPermissions', [
+      { eth_accounts: {} },
+    ]);
+    expect(requested.ok).toBe(true);
+    expect(requested.ok ? requested.result : []).toEqual([
+      {
+        parentCapability: 'eth_accounts',
+        caveats: [{ type: 'restrictReturnedAccounts', value: [wallet.primaryAccount] }],
+      },
+    ]);
+    const afterRequested = await requestFromPage(page, 'eth_accounts');
+    expect(afterRequested.ok ? afterRequested.result : undefined).toEqual([
+      wallet.primaryAccount,
+    ]);
+  });
+
+  test('wallet_revokePermissions ignores unsupported permissions without disconnecting', async ({
+    page,
+    wallet,
+  }) => {
+    const unsupported = await requestFromPage(page, 'wallet_revokePermissions', [
+      { wallet_snap: {} },
+    ]);
+
+    expect(unsupported.ok).toBe(false);
+    expect((unsupported as { error: ProviderErrorShape }).error).toMatchObject({
+      code: 4200,
+      message: 'The mock wallet does not support permission "wallet_snap".',
+    });
+    const accounts = await requestFromPage(page, 'eth_accounts');
+    expect(accounts.ok ? accounts.result : undefined).toEqual([
+      wallet.primaryAccount,
+    ]);
+  });
+
+  test('software lock hides accounts and rejects approval-gated requests until unlocked', async ({
+    page,
+    wallet,
+  }) => {
+    await page.evaluate(() => {
+      (window as unknown as { __accountEvents: unknown[] }).__accountEvents = [];
+      window.ethereum.on('accountsChanged', (accounts: unknown) => {
+        (window as unknown as { __accountEvents: unknown[] }).__accountEvents.push(accounts);
+      });
+    });
+
+    expect(await page.evaluate(() => window.ethereum._metamask?.isUnlocked())).toBe(true);
+
+    await wallet.lock();
+
+    await expect
+      .poll(() =>
+        page.evaluate(() => (window as unknown as { __accountEvents: unknown[] }).__accountEvents),
+      )
+      .toContainEqual([]);
+    expect(await page.evaluate(() => window.ethereum._metamask?.isUnlocked())).toBe(false);
+    expect(await page.evaluate(() => window.ethereum.isConnected())).toBe(true);
+    expect(await page.evaluate(() => window.ethereum.selectedAddress)).toBe(null);
+    const lockedAccounts = await requestFromPage(page, 'eth_accounts');
+    expect(lockedAccounts.ok ? lockedAccounts.result : undefined).toEqual([]);
+
+    const requestAccounts = await requestFromPage(page, 'eth_requestAccounts');
+    expect(requestAccounts.ok).toBe(false);
+    expect((requestAccounts as { error: ProviderErrorShape }).error).toMatchObject({
+      code: 4100,
+      message: 'The wallet is locked. Unlock the wallet and try again.',
+    });
+
+    await wallet.unlock();
+
+    await expect
+      .poll(() =>
+        page.evaluate(() => (window as unknown as { __accountEvents: unknown[] }).__accountEvents),
+      )
+      .toContainEqual([wallet.primaryAccount]);
+    expect(await page.evaluate(() => window.ethereum._metamask?.isUnlocked())).toBe(true);
+    expect(await page.evaluate(() => window.ethereum.selectedAddress)).toBe(wallet.primaryAccount);
+    const unlockedAccounts = await requestFromPage(page, 'eth_accounts');
+    expect(unlockedAccounts.ok ? unlockedAccounts.result : undefined).toEqual([wallet.primaryAccount]);
   });
 
   test('signing while disconnected returns 4100', async ({ page, wallet }) => {
@@ -256,6 +418,45 @@ test.describe('connection lifecycle', () => {
   });
 });
 
+test.describe('locked wallet startup', () => {
+  test.use({ walletOptions: { unlocked: false } });
+
+  test('starts locked without exposing selectedAddress or eth_accounts', async ({ page, wallet }) => {
+    const html = `
+      <script>
+        window.results = {
+          selectedAddressAtLoad: window.ethereum?.selectedAddress,
+          chainIdAtLoad: window.ethereum?.chainId,
+          connectedAtLoad: window.ethereum?.isConnected?.(),
+        };
+      </script>
+    `;
+    await page.goto(`data:text/html,${encodeURIComponent(html)}`);
+
+    const detected = await page.evaluate(async () => ({
+      ...(window.results as Record<string, unknown>),
+      isUnlocked: await window.ethereum._metamask?.isUnlocked(),
+      accounts: await window.ethereum.request({ method: 'eth_accounts' }),
+      providerState: await window.ethereum.request({ method: 'metamask_getProviderState' }),
+    }));
+
+    expect(detected).toMatchObject({
+      selectedAddressAtLoad: null,
+      chainIdAtLoad: '0x7a69',
+      connectedAtLoad: true,
+      isUnlocked: false,
+      accounts: [],
+      providerState: {
+        accounts: [],
+        chainId: '0x7a69',
+        isUnlocked: false,
+        networkVersion: '31337',
+      },
+    });
+    expect(wallet.isUnlocked).toBe(false);
+  });
+});
+
 test.describe('approval controls', () => {
   test('autoApprove(false) rejects prompt methods like wallet_watchAsset', async ({ page, wallet }) => {
     wallet.autoApprove(false);
@@ -266,6 +467,58 @@ test.describe('approval controls', () => {
     });
     expect(response.ok).toBe(false);
     expect((response as { error: ProviderErrorShape }).error.code).toBe(4001);
+    expect(wallet.watchedAssets).toEqual([]);
+  });
+
+  test('wallet_watchAsset records approved token prompts', async ({ page, wallet }) => {
+    const pending = wallet.waitForNextWatchedAsset();
+    const response = await requestFromPage(page, 'wallet_watchAsset', {
+      type: 'ERC20',
+      options: { address: RECIPIENT, symbol: 'BEEF', decimals: 18 },
+    });
+    const watched = await pending;
+
+    expect(response).toEqual({ ok: true, result: true });
+    expect(watched).toMatchObject({
+      chainId: '0x7a69',
+      type: 'ERC20',
+      options: { address: RECIPIENT, symbol: 'BEEF', decimals: 18 },
+      request: {
+        type: 'ERC20',
+        options: { address: RECIPIENT, symbol: 'BEEF', decimals: 18 },
+      },
+    });
+    expect(wallet.watchedAssets).toEqual([watched]);
+  });
+
+  test('wallet_watchAsset validates token payloads before consuming approval', async ({
+    page,
+    wallet,
+  }) => {
+    wallet.autoApprove(false);
+    wallet.approveNext('wallet_watchAsset');
+
+    const invalid = await requestFromPage(page, 'wallet_watchAsset', {
+      type: 'ERC20',
+      options: { address: 'not-an-address', symbol: 'BAD', decimals: 18 },
+    });
+    expect(invalid.ok).toBe(false);
+    expect((invalid as { error: ProviderErrorShape }).error).toMatchObject({
+      code: -32602,
+      message: 'wallet_watchAsset.options.address must be a valid address.',
+    });
+    expect(wallet.watchedAssets).toEqual([]);
+
+    const pending = wallet.waitForNextWatchedAsset();
+    const valid = await requestFromPage(page, 'wallet_watchAsset', {
+      type: 'ERC20',
+      options: { address: RECIPIENT, symbol: 'BEEF', decimals: 18 },
+    });
+    expect(valid).toEqual({ ok: true, result: true });
+    await expect(pending).resolves.toMatchObject({
+      type: 'ERC20',
+      options: { address: RECIPIENT },
+    });
   });
 
   test('default simulateRejection covers eth_requestAccounts', async ({ page, wallet }) => {
@@ -414,6 +667,119 @@ test.describe('approval controls', () => {
       message: 'Nope.',
     });
   });
+
+  test('hardware wallet approval delay keeps signing requests pending', async ({ page, wallet }) => {
+    wallet.configureHardwareWallet({ approvalDelayMs: 250 });
+
+    const responsePromise = requestFromPage(page, 'personal_sign', [
+      '0x68656c6c6f',
+      wallet.primaryAccount,
+    ]);
+
+    const settled = await Promise.race([
+      responsePromise.then(() => 'settled'),
+      new Promise((resolve) => setTimeout(() => resolve('pending'), 75)),
+    ]);
+    expect(settled).toBe('pending');
+
+    const response = await responsePromise;
+    expect(response.ok).toBe(true);
+  });
+
+  test('hardware wallet device states surface provider-shaped errors', async ({ page, wallet }) => {
+    wallet.configureHardwareWallet({ approvalDelayMs: 0 });
+
+    for (const [state, code, message] of [
+      ['locked', 4001, /locked/i],
+      ['wrong-app', 4001, /Ethereum app/i],
+      ['blind-signing-disabled', 4001, /Blind signing/i],
+      ['disconnected', 4900, /disconnected/i],
+    ] as const) {
+      wallet.setHardwareWalletState(state);
+      const response = await requestFromPage(page, 'personal_sign', [
+        '0x68656c6c6f',
+        wallet.primaryAccount,
+      ]);
+
+      expect(response.ok, state).toBe(false);
+      expect((response as { error: ProviderErrorShape }).error.code, state).toBe(code);
+      expect((response as { error: ProviderErrorShape }).error.message, state).toMatch(message);
+    }
+
+    wallet.setHardwareWalletState('ready');
+    const recovered = await requestFromPage(page, 'personal_sign', [
+      '0x68656c6c6f',
+      wallet.primaryAccount,
+    ]);
+    expect(recovered.ok).toBe(true);
+  });
+
+  test('hardware wallet wrong-app errors use method-specific app names', async ({ wallet }) => {
+    wallet.configureHardwareWallet({
+      approvalDelayMs: 0,
+      deviceState: 'wrong-app',
+    });
+
+    await expect(
+      wallet.handleExternalRequest(
+        { method: 'solana_signMessage', params: [{ message: 'mock-message' }] },
+        { bypassOriginCheck: true },
+      ),
+    ).rejects.toMatchObject({
+      code: 4001,
+      message: 'Open the Solana app on your hardware wallet and try again.',
+    });
+
+    wallet.configureHardwareWallet({
+      approvalDelayMs: 0,
+      deviceState: 'wrong-app',
+      requiredApp: 'Avalanche',
+    });
+
+    await expect(
+      wallet.handleExternalRequest(
+        { method: 'personal_sign', params: ['0x68656c6c6f', wallet.primaryAccount] },
+        { bypassOriginCheck: true },
+      ),
+    ).rejects.toMatchObject({
+      code: 4001,
+      message: 'Open the Avalanche app on your hardware wallet and try again.',
+    });
+
+    wallet.configureHardwareWallet({
+      approvalDelayMs: 0,
+      deviceState: 'wrong-app',
+      requiredApp: 'Ethereum',
+      requiredApps: { solana_signMessage: 'Backpack Solana' },
+    });
+
+    await expect(
+      wallet.handleExternalRequest(
+        { method: 'solana_signMessage', params: [{ message: 'mock-message' }] },
+        { bypassOriginCheck: true },
+      ),
+    ).rejects.toMatchObject({
+      code: 4001,
+      message: 'Open the Backpack Solana app on your hardware wallet and try again.',
+    });
+  });
+
+  test('hardware wallet simulation applies to external transports', async ({ wallet }) => {
+    wallet.configureHardwareWallet({
+      approvalDelayMs: 0,
+      deviceState: 'blind-signing-disabled',
+    });
+
+    await expect(
+      wallet.handleExternalRequest(
+        { method: 'personal_sign', params: ['0x68656c6c6f', wallet.primaryAccount] },
+        { bypassOriginCheck: true },
+      ),
+    ).rejects.toMatchObject({
+      code: 4001,
+      message: 'Blind signing is disabled on your hardware wallet.',
+    });
+  });
 });
 
 test.describe('provider surface', () => {
@@ -435,12 +801,84 @@ test.describe('provider surface', () => {
     expect((response as { error: ProviderErrorShape }).error.code).toBe(4200);
   });
 
+  test('unknown coinbase_* methods return 4200 instead of a node error', async ({ page, wallet }) => {
+    void wallet;
+    const response = await requestFromPage(page, 'coinbase_definitelyNotAMethod');
+    expect(response.ok).toBe(false);
+    expect((response as { error: ProviderErrorShape }).error.code).toBe(4200);
+  });
+
+  test('subscription methods return wallet-shaped 4200 errors', async ({ page, wallet }) => {
+    const subscribe = await requestFromPage(page, 'eth_subscribe', ['newHeads']);
+    expect(subscribe.ok).toBe(false);
+    expect((subscribe as { error: ProviderErrorShape }).error).toMatchObject({
+      code: 4200,
+      message: 'The mock wallet does not support the method "eth_subscribe".',
+    });
+
+    await expect(
+      wallet.handleExternalRequest(
+        { method: 'eth_unsubscribe', params: ['0x1'] },
+        { bypassOriginCheck: true },
+      ),
+    ).rejects.toMatchObject({
+      code: 4200,
+      message: 'The mock wallet does not support the method "eth_unsubscribe".',
+    });
+  });
+
   test('legacy enable/send/sendAsync surface works', async ({ page, wallet }) => {
     const viaEnable = await page.evaluate(() => window.ethereum.enable());
     expect((viaEnable as string[])[0]?.toLowerCase()).toBe(wallet.primaryAccount.toLowerCase());
 
     const viaSendString = await page.evaluate(() => window.ethereum.send('eth_chainId'));
     expect(viaSendString).toBe(wallet.currentChainId);
+
+    const viaSendPayload = await page.evaluate(() =>
+      window.ethereum.send({ id: 2, jsonrpc: '2.0', method: 'eth_chainId', params: [] }),
+    );
+    expect(viaSendPayload).toBe(wallet.currentChainId);
+
+    const viaSendBatch = await page.evaluate(() =>
+      window.ethereum.send([
+        { id: 20, jsonrpc: '2.0', method: 'eth_chainId', params: [] },
+        { id: 21, jsonrpc: '2.0', method: 'eth_accounts', params: [] },
+      ]),
+    );
+    expect((viaSendBatch as unknown[])[0]).toBe(wallet.currentChainId);
+    expect(((viaSendBatch as unknown[])[1] as string[])[0]?.toLowerCase()).toBe(
+      wallet.primaryAccount.toLowerCase(),
+    );
+
+    const viaSendCallback = await page.evaluate(
+      () =>
+        new Promise((resolve, reject) => {
+          window.ethereum.send(
+            { id: 3, jsonrpc: '2.0', method: 'eth_chainId', params: [] },
+            (error: unknown, response: { result?: unknown }) =>
+              error ? reject(error) : resolve(response.result),
+          );
+        }),
+    );
+    expect(viaSendCallback).toBe(wallet.currentChainId);
+
+    const viaSendCallbackBatch = await page.evaluate(
+      () =>
+        new Promise((resolve, reject) => {
+          window.ethereum.send(
+            [
+              { id: 30, jsonrpc: '2.0', method: 'eth_chainId', params: [] },
+              { id: 31, jsonrpc: '2.0', method: 'net_version', params: [] },
+            ],
+            (error: unknown, response: Array<{ id?: number; result?: unknown }>) =>
+              error ? reject(error) : resolve(response),
+          );
+        }),
+    );
+    expect(viaSendCallbackBatch).toEqual([
+      { id: 30, jsonrpc: '2.0', result: wallet.currentChainId },
+      { id: 31, jsonrpc: '2.0', result: '31337' },
+    ]);
 
     const viaSendAsync = await page.evaluate(
       () =>
@@ -453,6 +891,74 @@ test.describe('provider surface', () => {
         }),
     );
     expect((viaSendAsync as string[])[0]?.toLowerCase()).toBe(wallet.primaryAccount.toLowerCase());
+
+    const viaSendAsyncBatch = await page.evaluate(
+      () =>
+        new Promise((resolve, reject) => {
+          window.ethereum.sendAsync(
+            [
+              { id: 40, jsonrpc: '2.0', method: 'eth_chainId', params: [] },
+              { id: 41, jsonrpc: '2.0', method: 'net_version', params: [] },
+            ],
+            (error: unknown, response: Array<{ id?: number; result?: unknown }>) =>
+              error ? reject(error) : resolve(response),
+          );
+        }),
+    );
+    expect(viaSendAsyncBatch).toEqual([
+      { id: 40, jsonrpc: '2.0', result: wallet.currentChainId },
+      { id: 41, jsonrpc: '2.0', result: '31337' },
+    ]);
+
+    const viaSendCallbackBatchWithError = await page.evaluate(
+      () =>
+        new Promise((resolve, reject) => {
+          window.ethereum.send(
+            [
+              { id: 50, jsonrpc: '2.0', method: 'eth_chainId', params: [] },
+              { id: 51, jsonrpc: '2.0', method: 'eth_subscribe', params: ['newHeads'] },
+            ],
+            (error: unknown, response: Array<{ id?: number; result?: unknown; error?: unknown }>) =>
+              error ? reject(error) : resolve(response),
+          );
+        }),
+    );
+    expect(viaSendCallbackBatchWithError).toEqual([
+      { id: 50, jsonrpc: '2.0', result: wallet.currentChainId },
+      {
+        id: 51,
+        jsonrpc: '2.0',
+        error: {
+          code: 4200,
+          message: 'The mock wallet does not support the method "eth_subscribe".',
+        },
+      },
+    ]);
+
+    const viaSendAsyncBatchWithError = await page.evaluate(
+      () =>
+        new Promise((resolve, reject) => {
+          window.ethereum.sendAsync(
+            [
+              { id: 60, jsonrpc: '2.0', method: 'net_version', params: [] },
+              { id: 61, jsonrpc: '2.0', method: 'eth_unsubscribe', params: ['0x1'] },
+            ],
+            (error: unknown, response: Array<{ id?: number; result?: unknown; error?: unknown }>) =>
+              error ? reject(error) : resolve(response),
+          );
+        }),
+    );
+    expect(viaSendAsyncBatchWithError).toEqual([
+      { id: 60, jsonrpc: '2.0', result: '31337' },
+      {
+        id: 61,
+        jsonrpc: '2.0',
+        error: {
+          code: 4200,
+          message: 'The mock wallet does not support the method "eth_unsubscribe".',
+        },
+      },
+    ]);
   });
 
   test('popup windows opened by the page get the provider too', async ({ page, context, wallet }) => {
@@ -471,6 +977,357 @@ test.describe('provider surface', () => {
     await popup.waitForFunction(() => typeof window.ethereum?.request === 'function');
     const chainId = await popup.evaluate(() => window.ethereum.request({ method: 'eth_chainId' }));
     expect(chainId).toMatch(/^0x/);
+  });
+});
+
+test.describe('Coinbase/Base Account methods', () => {
+  test.use({ walletOptions: walletProfiles.coinbase() });
+
+  test('wallet_connect, subaccounts, and spend permission lookups use Coinbase response shapes', async ({
+    page,
+    wallet,
+  }) => {
+    wallet.configureCoinbaseWallet({
+      permissions: [
+        coinbasePermission(
+          wallet.primaryAccount,
+          COINBASE_SPENDER,
+          COINBASE_PERMISSION_HASH_2,
+          200,
+        ),
+        coinbasePermission(
+          wallet.primaryAccount,
+          COINBASE_OTHER_SPENDER,
+          COINBASE_PERMISSION_HASH_3,
+          300,
+        ),
+        coinbasePermission(
+          wallet.primaryAccount,
+          COINBASE_SPENDER,
+          COINBASE_PERMISSION_HASH_1,
+          100,
+        ),
+      ],
+      subAccounts: [
+        {
+          address: COINBASE_SUB_ACCOUNT,
+          account: wallet.primaryAccount,
+          domain: 'https://app.example.com',
+          factory: COINBASE_FACTORY,
+          factoryData: '0x1234',
+        },
+      ],
+      factory: COINBASE_FACTORY,
+      factoryData: '0x5678',
+    });
+
+    await wallet.disconnect();
+    const connected = await requestFromPage(page, 'wallet_connect', [
+      {
+        capabilities: {
+          signInWithEthereum: {
+            nonce: 'nonce-1',
+            chainId: wallet.currentChainId,
+            domain: 'app.example.com',
+            uri: 'https://app.example.com',
+          },
+        },
+      },
+    ]);
+    expect(connected.ok).toBe(true);
+    const connection = connected.ok
+      ? (connected.result as {
+          accounts: { address: Address }[];
+          chainId: Hex;
+          isConnected: boolean;
+          capabilities?: { signInWithEthereum?: { message: string; signature: Hex } };
+        })
+      : undefined;
+    expect(connection?.accounts.map((account) => account.address.toLowerCase())).toEqual([
+      wallet.primaryAccount.toLowerCase(),
+    ]);
+    expect(connection?.chainId).toBe(wallet.currentChainId);
+    expect(connection?.isConnected).toBe(true);
+    expect(connection?.capabilities?.signInWithEthereum?.message).toContain('Nonce: nonce-1');
+    expect(
+      await verifyMessage({
+        address: wallet.primaryAccount,
+        message: connection?.capabilities?.signInWithEthereum?.message ?? '',
+        signature: connection?.capabilities?.signInWithEthereum?.signature ?? '0x',
+      }),
+    ).toBe(true);
+
+    const listed = await requestFromPage(page, 'wallet_getSubAccounts', [
+      { account: wallet.primaryAccount, domain: 'https://app.example.com' },
+    ]);
+    expect(listed.ok).toBe(true);
+    expect(listed.ok ? listed.result : undefined).toEqual({
+      subAccounts: [
+        {
+          address: COINBASE_SUB_ACCOUNT,
+          factory: COINBASE_FACTORY,
+          factoryData: '0x1234',
+        },
+      ],
+    });
+
+    const added = await requestFromPage(page, 'wallet_addSubAccount', [
+      {
+        account: {
+          type: 'create',
+          keys: [{ type: 'p256', publicKey: '0x0123456789abcdef' }],
+        },
+        domain: 'https://app.example.com',
+      },
+    ]);
+    expect(added.ok).toBe(true);
+    expect(added.ok ? added.result : undefined).toMatchObject({
+      chainId: wallet.currentChainId,
+      factory: COINBASE_FACTORY,
+      factoryData: '0x5678',
+    });
+    expect((added.ok ? (added.result as { address?: string }).address : '')).toMatch(
+      /^0x[0-9a-f]{40}$/,
+    );
+
+    const listedAfterAdd = await requestFromPage(page, 'wallet_getSubAccounts', [
+      { account: wallet.primaryAccount, domain: 'https://app.example.com' },
+    ]);
+    expect(
+      listedAfterAdd.ok
+        ? (listedAfterAdd.result as { subAccounts: { address: string }[] }).subAccounts
+        : [],
+    ).toHaveLength(2);
+
+    const firstPage = await requestFromPage(page, 'coinbase_fetchPermissions', [
+      {
+        spender: COINBASE_SPENDER,
+        chainId: wallet.currentChainId,
+        account: wallet.primaryAccount,
+        pageOptions: { pageSize: 1 },
+      },
+    ]);
+    expect(firstPage.ok).toBe(true);
+    expect(
+      firstPage.ok
+        ? (firstPage.result as { permissions: CoinbasePermission[] }).permissions.map(
+            (permission) => permission.permissionHash,
+          )
+        : [],
+    ).toEqual([COINBASE_PERMISSION_HASH_1]);
+    expect(firstPage.ok ? firstPage.result : undefined).toMatchObject({
+      pageDescription: { pageSize: 1, nextCursor: '1' },
+    });
+
+    const secondPage = await requestFromPage(page, 'coinbase_fetchPermissions', [
+      {
+        spender: COINBASE_SPENDER,
+        chainId: wallet.currentChainId,
+        account: wallet.primaryAccount,
+        pageOptions: { pageSize: 1, cursor: '1' },
+      },
+    ]);
+    expect(
+      secondPage.ok
+        ? (secondPage.result as { permissions: CoinbasePermission[] }).permissions.map(
+            (permission) => permission.permissionHash,
+          )
+        : [],
+    ).toEqual([COINBASE_PERMISSION_HASH_2]);
+
+    const single = await requestFromPage(page, 'coinbase_fetchPermission', [
+      { permissionHash: COINBASE_PERMISSION_HASH_2 },
+    ]);
+    expect(single.ok).toBe(true);
+    expect(
+      single.ok
+        ? (single.result as { permission: CoinbasePermission }).permission.permissionHash
+        : undefined,
+    ).toBe(COINBASE_PERMISSION_HASH_2);
+
+    await wallet.lock();
+
+    const lockedSubAccounts = await requestFromPage(page, 'wallet_getSubAccounts', [
+      { account: wallet.primaryAccount, domain: 'https://app.example.com' },
+    ]);
+    expect(lockedSubAccounts.ok).toBe(false);
+    expect((lockedSubAccounts as { error: ProviderErrorShape }).error).toMatchObject({
+      code: 4100,
+      message: 'The wallet is locked. Unlock the wallet and try again.',
+    });
+
+    const lockedPermission = await requestFromPage(page, 'coinbase_fetchPermission', [
+      { permissionHash: COINBASE_PERMISSION_HASH_2 },
+    ]);
+    expect(lockedPermission.ok).toBe(false);
+    expect((lockedPermission as { error: ProviderErrorShape }).error).toMatchObject({
+      code: 4100,
+      message: 'The wallet is locked. Unlock the wallet and try again.',
+    });
+
+    await wallet.unlock();
+    const unlockedPermission = await requestFromPage(page, 'coinbase_fetchPermission', [
+      { permissionHash: COINBASE_PERMISSION_HASH_2 },
+    ]);
+    expect(unlockedPermission.ok).toBe(true);
+    expect(
+      unlockedPermission.ok
+        ? (unlockedPermission.result as { permission: CoinbasePermission }).permission.permissionHash
+        : undefined,
+    ).toBe(COINBASE_PERMISSION_HASH_2);
+  });
+
+  test('approval gates apply to Coinbase prompts and permission fetches', async ({
+    page,
+    wallet,
+  }) => {
+    wallet.configureCoinbaseWallet({
+      permissions: [
+        coinbasePermission(
+          wallet.primaryAccount,
+          COINBASE_SPENDER,
+          COINBASE_PERMISSION_HASH_1,
+          100,
+        ),
+      ],
+    });
+    wallet.autoApprove(false);
+
+    const deniedConnect = await requestFromPage(page, 'wallet_connect', [{}]);
+    expect(deniedConnect.ok).toBe(false);
+    expect((deniedConnect as { error: ProviderErrorShape }).error.code).toBe(4001);
+
+    wallet.approveNext('wallet_connect');
+    expect((await requestFromPage(page, 'wallet_connect', [{}])).ok).toBe(true);
+
+    const deniedAdd = await requestFromPage(page, 'wallet_addSubAccount', [
+      {
+        account: {
+          type: 'create',
+          keys: [{ type: 'p256', publicKey: '0x0123456789abcdef' }],
+        },
+      },
+    ]);
+    expect(deniedAdd.ok).toBe(false);
+    expect((deniedAdd as { error: ProviderErrorShape }).error.code).toBe(4001);
+
+    wallet.approveNext('wallet_addSubAccount');
+    expect(
+      (
+        await requestFromPage(page, 'wallet_addSubAccount', [
+          {
+            account: {
+              type: 'create',
+              keys: [{ type: 'p256', publicKey: '0x0123456789abcdef' }],
+            },
+          },
+        ])
+      ).ok,
+    ).toBe(true);
+
+    const deniedFetch = await requestFromPage(page, 'coinbase_fetchPermissions', [
+      { spender: COINBASE_SPENDER, chainId: wallet.currentChainId },
+    ]);
+    expect(deniedFetch.ok).toBe(false);
+    expect((deniedFetch as { error: ProviderErrorShape }).error.code).toBe(4001);
+
+    wallet.approveNext('coinbase_fetchPermissions');
+    expect(
+      (
+        await requestFromPage(page, 'coinbase_fetchPermissions', [
+          { spender: COINBASE_SPENDER, chainId: wallet.currentChainId },
+        ])
+      ).ok,
+    ).toBe(true);
+  });
+
+  test('Coinbase simulation can be disabled for a Coinbase persona', async ({ page, wallet }) => {
+    wallet.configureCoinbaseWallet(false);
+
+    const connect = await requestFromPage(page, 'wallet_connect', [{}]);
+    expect(connect.ok).toBe(false);
+    expect((connect as { error: ProviderErrorShape }).error.code).toBe(4200);
+
+    const permission = await requestFromPage(page, 'coinbase_fetchPermission', [
+      { permissionHash: COINBASE_PERMISSION_HASH_1 },
+    ]);
+    expect(permission.ok).toBe(false);
+    expect((permission as { error: ProviderErrorShape }).error.code).toBe(4200);
+  });
+});
+
+test.describe('wallet behavior profiles', () => {
+  test.use({
+    walletOptions: walletProfiles.ledger({
+      hardwareWallet: { approvalDelayMs: 0, deviceState: 'locked' },
+    }),
+  });
+
+  test('Ledger profile applies the wallet persona and hardware simulation', async ({ page, wallet }) => {
+    expect(wallet.providerInfo.rdns).toBe('com.ledger');
+    const providerState = await page.evaluate(() => ({
+      isLedgerWallet: window.ethereum.isLedgerWallet === true,
+      isMetaMask: window.ethereum.isMetaMask === true,
+    }));
+    expect(providerState).toEqual({ isLedgerWallet: true, isMetaMask: false });
+
+    const response = await requestFromPage(page, 'personal_sign', [
+      '0x68656c6c6f',
+      wallet.primaryAccount,
+    ]);
+    expect(response.ok).toBe(false);
+    expect((response as { error: ProviderErrorShape }).error).toMatchObject({
+      code: 4001,
+      message: 'Hardware wallet is locked. Unlock the device and try again.',
+    });
+  });
+});
+
+test.describe('Solana account RPC aliases', () => {
+  test.use({
+    walletOptions: walletProfiles.phantomEvm(),
+  });
+
+  test('returns visible Solana accounts through injected and external request paths', async ({
+    page,
+    wallet,
+  }) => {
+    const expectedAccount = {
+      publicKey: '26qv4GCcx98RihuK3c4T6ozB3J7L6VwCuFVc7Ta2A3Uo',
+      pubkey: '26qv4GCcx98RihuK3c4T6ozB3J7L6VwCuFVc7Ta2A3Uo',
+      address: '26qv4GCcx98RihuK3c4T6ozB3J7L6VwCuFVc7Ta2A3Uo',
+    };
+
+    const injectedGet = await requestFromPage(page, 'solana_getAccounts');
+    expect(injectedGet).toEqual({ ok: true, result: [expectedAccount] });
+
+    const externalGet = await wallet.handleExternalRequest(
+      { method: 'solana_getAccounts', params: [] },
+      { bypassOriginCheck: true },
+    );
+    expect(externalGet).toEqual([expectedAccount]);
+    expect(wallet.solanaAccounts).toEqual([expectedAccount]);
+
+    const injectedRequest = await requestFromPage(page, 'solana_requestAccounts', [{}]);
+    expect(injectedRequest).toEqual({ ok: true, result: [expectedAccount] });
+
+    await wallet.lock();
+    expect(wallet.solanaAccounts).toEqual([]);
+    const lockedGet = await wallet.handleExternalRequest(
+      { method: 'solana_getAccounts', params: [] },
+      { bypassOriginCheck: true },
+    );
+    expect(lockedGet).toEqual([]);
+
+    const lockedRequest = await requestFromPage(page, 'solana_requestAccounts', [{}]);
+    expect(lockedRequest.ok).toBe(false);
+    expect((lockedRequest as { error: ProviderErrorShape }).error).toMatchObject({
+      code: 4100,
+      message: 'The wallet is locked. Unlock the wallet and try again.',
+    });
+
+    await wallet.unlock();
+    expect(wallet.solanaAccounts).toEqual([expectedAccount]);
   });
 });
 

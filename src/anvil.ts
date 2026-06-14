@@ -114,6 +114,10 @@ export type AnvilViemClient = TestClient<'anvil', Transport, Chain> &
   PublicActions<Transport, Chain> &
   WalletActions<Chain>;
 
+type GenericRpcRequester = {
+  request(request: JsonRpcRequest): Promise<unknown>;
+};
+
 const DEFAULT_MNEMONIC =
   'test test test test test test test test test test test junk';
 const LOOPBACK_HOST_PATTERN = /^(127(\.\d{1,3}){3}|localhost|::1|\[::1\])$/i;
@@ -417,7 +421,7 @@ export class ChainController implements RpcClient {
   }
 
   async request(request: JsonRpcRequest): Promise<unknown> {
-    return this.client.request(request as never);
+    return (this.client as unknown as GenericRpcRequester).request(request);
   }
 
   async impersonateAccount(address: Address): Promise<void> {
@@ -474,7 +478,7 @@ export class ChainController implements RpcClient {
       account: from,
       value: options.value,
       chain: this.client.chain,
-    } as never);
+    });
     const receipt = await this.client.waitForTransactionReceipt({ hash });
     if (receipt.status !== 'success' || !receipt.contractAddress) {
       throw new Error(`Contract deployment reverted (tx ${hash}).`);
@@ -547,7 +551,7 @@ export class ChainController implements RpcClient {
       nonce: options.nonce,
       chainId: options.chainId ?? this.chainId,
       executor: options.executor,
-    } as never);
+    });
   }
 
   /**

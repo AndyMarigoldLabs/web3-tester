@@ -143,13 +143,3 @@ These were ruled once across all designs and supersede any conflicting per-desig
 
 - **Phantom (or other non-MetaMask) real-wallet adapters** — the RealWalletController interface stays the seam; a second adapter is future validation work, not 0.3.0 scope.
 - **Cypress runner support** — this library is Playwright-native by design.
-
-## Opportunistic polish (no phase; pick up alongside adjacent work)
-
-- `off()` / `addListener` EventEmitter aliases on the injected provider.
-- `connect` event emission on page load (after dapp listeners attach — see review's verifier note on timing).
-- `eth_subscribe` / `message` events (or a clean 4200 with documentation).
-- Remove the remaining `as never` casts; typecheck `examples/`.
-- `files` field hygiene (Fjord-specific docs out of the artifact).
-- Bound the `@playwright/test` peer range above (e.g. `<2`).
-- `PrivateKeyRpcClient` `eth_sendTransaction`: honor `from` and typed-tx fields it currently drops (review finding line 148).

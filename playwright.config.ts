@@ -1,5 +1,32 @@
 import { defineConfig, devices } from '@playwright/test';
 
+const hermeticLibraryTests = [
+  '**/anvil.spec.ts',
+  '**/benchmark.spec.ts',
+  '**/eip5792.spec.ts',
+  '**/eip7702.spec.ts',
+  '**/erc20.spec.ts',
+  '**/fixtures-multichain.spec.ts',
+  '**/live-fixtures.spec.ts',
+  '**/matchers.spec.ts',
+  '**/mock-wallet.spec.ts',
+  '**/mock-wallet-multichain.spec.ts',
+  '**/multi-user.spec.ts',
+  '**/private-key-rpc-client.spec.ts',
+  '**/provider-injection.spec.ts',
+  '**/real-wallet.spec.ts',
+  '**/real-wallet-smoke.spec.ts',
+  '**/safe.spec.ts',
+  '**/walletconnect.spec.ts',
+  '**/walletconnect-live.spec.ts',
+];
+
+const browserPortableTests = [
+  '**/live-fixtures.spec.ts',
+  '**/multi-user.spec.ts',
+  '**/provider-injection.spec.ts',
+];
+
 export default defineConfig({
   testDir: './tests',
   fullyParallel: true,
@@ -10,26 +37,35 @@ export default defineConfig({
     // This is what `npm test` runs and what CI gates on.
     {
       name: 'library',
-      testMatch: [
-        '**/anvil.spec.ts',
-        '**/eip5792.spec.ts',
-        '**/eip7702.spec.ts',
-        '**/erc20.spec.ts',
-        '**/fixtures-multichain.spec.ts',
-        '**/live-fixtures.spec.ts',
-        '**/matchers.spec.ts',
-        '**/mock-wallet.spec.ts',
-        '**/mock-wallet-multichain.spec.ts',
-        '**/multi-user.spec.ts',
-        '**/private-key-rpc-client.spec.ts',
-        '**/provider-injection.spec.ts',
-        '**/real-wallet.spec.ts',
-        '**/real-wallet-smoke.spec.ts',
-        '**/walletconnect.spec.ts',
-        '**/walletconnect-live.spec.ts',
-      ],
+      testMatch: hermeticLibraryTests,
       use: {
         ...devices['Desktop Chrome'],
+        trace: 'on-first-retry',
+      },
+    },
+    // Browser-portable fixture coverage. Real extension fixtures are
+    // intentionally absent here because Chrome extensions require Chromium.
+    {
+      name: 'browser-chromium',
+      testMatch: browserPortableTests,
+      use: {
+        ...devices['Desktop Chrome'],
+        trace: 'on-first-retry',
+      },
+    },
+    {
+      name: 'browser-firefox',
+      testMatch: browserPortableTests,
+      use: {
+        ...devices['Desktop Firefox'],
+        trace: 'on-first-retry',
+      },
+    },
+    {
+      name: 'browser-webkit',
+      testMatch: browserPortableTests,
+      use: {
+        ...devices['Desktop Safari'],
         trace: 'on-first-retry',
       },
     },

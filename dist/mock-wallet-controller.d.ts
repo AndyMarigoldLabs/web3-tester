@@ -1,6 +1,7 @@
 import type { Page } from '@playwright/test';
 import { type Address, type Hex } from 'viem';
-import type { JsonRpcRequest, RpcClient, WalletProviderInfo } from './types.js';
+import type { JsonRpcRequest, RpcClient, WalletProviderIdentity, WalletProviderInfo } from './types.js';
+import { type WalletPersonaInput } from './wallet-personas.js';
 export type RejectionRule = {
     methods?: readonly string[];
     message?: string;
@@ -20,6 +21,16 @@ export type SentTransactionRecord = {
     data?: Hex;
     value?: string;
 };
+export type WatchedAssetRecord = {
+    /** The wallet's active chain when the asset prompt was accepted. */
+    chainId: Hex;
+    /** EIP-747 asset type, usually ERC20. */
+    type?: string;
+    /** Wallet-visible asset options passed by the dapp. */
+    options?: Record<string, unknown>;
+    /** Original wallet_watchAsset request object passed by the dapp. */
+    request: unknown;
+};
 /** A chain backend: any RpcClient, or an http(s) RPC URL string. */
 export type ChainBackend = RpcClient | string;
 export type AtomicCapabilityStatus = 'supported' | 'ready' | 'unsupported';
@@ -32,6 +43,73 @@ export type Eip5792Options = {
     capabilities?: Record<Hex, Record<string, unknown>>;
     /** Batches with more calls throw 5740. Default: 100. */
     maxCallsPerBatch?: number;
+};
+export type HardwareWalletDeviceState = 'ready' | 'locked' | 'wrong-app' | 'blind-signing-disabled' | 'disconnected';
+export type HardwareWalletSimulationOptions = {
+    /**
+     * Enables deterministic hardware-wallet behavior. Passing an options object
+     * enables it unless `enabled: false` is set.
+     */
+    enabled?: boolean;
+    /** Delay after user approval while the request waits for device confirmation. */
+    approvalDelayMs?: number;
+    /** Device state to emulate. Non-ready states reject matching requests. */
+    deviceState?: HardwareWalletDeviceState;
+    /** Methods that require hardware confirmation. Defaults to signing/spend methods. */
+    methods?: readonly string[];
+    /**
+     * App name shown when `deviceState` is `wrong-app`. Defaults to the app
+     * inferred from the method, currently Ethereum for EVM methods and Solana
+     * for `solana_*` methods.
+     */
+    requiredApp?: string;
+    /** Method-specific app names for `wrong-app` errors. Overrides `requiredApp`. */
+    requiredApps?: Record<string, string>;
+};
+export type CoinbaseSpendPermission = {
+    account: Address;
+    spender: Address;
+    token: Address;
+    allowance: string;
+    period: number;
+    start: number;
+    end: number;
+    salt: string;
+    extraData: Hex;
+};
+export type CoinbasePermission = {
+    createdAt: number;
+    permissionHash: Hex;
+    signature: Hex;
+    spendPermission: CoinbaseSpendPermission;
+    /** Filtering metadata; omitted from RPC responses. Defaults to the active chain. */
+    chainId?: number | Hex | string;
+};
+export type CoinbaseSubAccount = {
+    address: Address;
+    factory?: Address;
+    factoryData?: Hex;
+    /** Filtering/return metadata. Defaults to the active chain. */
+    chainId?: number | Hex | string;
+    /** Optional owner account filter for wallet_getSubAccounts. */
+    account?: Address;
+    /** Optional dapp-domain filter for wallet_getSubAccounts. */
+    domain?: string;
+};
+export type CoinbaseWalletSimulationOptions = {
+    /**
+     * Enables Coinbase/Base Account RPC methods. Defaults to true when any
+     * configured persona has isCoinbaseWallet.
+     */
+    enabled?: boolean;
+    /** Seed spend permissions returned by coinbase_fetchPermission(s). */
+    permissions?: readonly CoinbasePermission[];
+    /** Seed sub-accounts returned by wallet_getSubAccounts. */
+    subAccounts?: readonly CoinbaseSubAccount[];
+    /** Default factory attached to generated sub-accounts. */
+    factory?: Address;
+    /** Default factoryData attached to generated sub-accounts. */
+    factoryData?: Hex;
 };
 export type CallsBatchRecord = {
     id: Hex;
@@ -97,10 +175,39 @@ export type MockWalletControllerOptions = {
      * a legacy wallet that answers 4200.
      */
     eip5792?: boolean | Eip5792Options;
+    /** Primary wallet identity, including EIP-6963 metadata, provider flags, and global aliases. */
+    persona?: WalletPersonaInput;
+    /** Additional announced wallet identities. */
+    additionalPersonas?: readonly WalletPersonaInput[];
+    /**
+     * Deterministic Ledger/Trezor-style approval simulation. `true` enables
+     * the default ready device with a confirmation delay; an options object can
+     * model locked, wrong-app, blind-signing-disabled, and disconnected states.
+     */
+    hardwareWallet?: boolean | HardwareWalletSimulationOptions;
+    /**
+     * Coinbase/Base Account RPC simulation. Auto-enabled for Coinbase personas;
+     * pass false to make coinbase_* and Coinbase wallet_* methods unsupported.
+     */
+    coinbase?: boolean | CoinbaseWalletSimulationOptions;
+    /**
+     * Legacy shortcut for overriding primary EIP-6963 metadata. Prefer
+     * `persona` for wallet flags and aliases.
+     */
     providerInfo?: Partial<WalletProviderInfo>;
+    /**
+     * Legacy shortcut for extra EIP-6963-only providers. Prefer
+     * `additionalPersonas` for wallet flags and aliases.
+     */
     additionalProviders?: readonly Partial<WalletProviderInfo>[];
     autoApprove?: boolean;
     connected?: boolean;
+    /**
+     * Software wallet lock state exposed through `_metamask.isUnlocked()` and
+     * `metamask_getProviderState`. Locked wallets keep chain connectivity but
+     * hide accounts and reject approval-gated account/sign/spend requests.
+     */
+    unlocked?: boolean;
     /**
      * When set, only frames whose origin matches an entry (URL or origin
      * string) can reach the wallet; everything else gets a 4100 error. Leave
@@ -114,7 +221,10 @@ export declare class MockWalletController {
     private accounts;
     private chainId;
     private connected;
+    private unlocked;
     private approveRequests;
+    private hardwareWallet;
+    private coinbase;
     private rejectionQueue;
     private holdQueue;
     private approvalQueue;
@@ -135,15 +245,23 @@ export declare class MockWalletController {
     readonly shownCallsStatusIds: Hex[];
     readonly sentTransactions: Hex[];
     readonly sentTransactionRequests: SentTransactionRecord[];
+    readonly watchedAssets: WatchedAssetRecord[];
     constructor(page: Page, rpcClient: RpcClient, options: MockWalletControllerOptions);
     readonly providerInfo: WalletProviderInfo;
-    readonly providerInfos: readonly WalletProviderInfo[];
+    readonly providerInfos: readonly WalletProviderIdentity[];
     get primaryAccount(): Address;
     /** Current account list; index 0 is the selected account. */
     get currentAccounts(): readonly Address[];
     get currentChainId(): Hex;
     /** Chain ids that currently have an RPC backend, canonical hex. */
     get backedChainIds(): readonly Hex[];
+    get coinbasePermissions(): readonly CoinbasePermission[];
+    get coinbaseSubAccounts(): readonly CoinbaseSubAccount[];
+    get solanaAccounts(): readonly {
+        publicKey: string;
+        pubkey: string;
+        address: string;
+    }[];
     /**
      * Test-side chain registration (Synpress addNetwork analogue): registers
      * the backend and marks the chain known — no approval gate, no probe, and
@@ -171,6 +289,10 @@ export declare class MockWalletController {
     onProviderEvent(listener: (event: string, payload: unknown) => void): () => void;
     injectMockProvider(): Promise<void>;
     autoApprove(enabled?: boolean): void;
+    configureHardwareWallet(options: boolean | HardwareWalletSimulationOptions): void;
+    configureCoinbaseWallet(options: boolean | CoinbaseWalletSimulationOptions): void;
+    setHardwareWalletState(state: HardwareWalletDeviceState): void;
+    setHardwareWalletApprovalDelay(approvalDelayMs: number): void;
     /**
      * One-shot: the next atomicRequired wallet_sendCalls while the atomic
      * capability is 'ready' throws 5750 (user rejected the EOA upgrade)
@@ -204,6 +326,13 @@ export declare class MockWalletController {
         timeoutMs?: number;
     }): Promise<Hex>;
     /**
+     * Resolves with the next approved wallet_watchAsset request after this
+     * call. Invoke before triggering the dapp action, then await it.
+     */
+    waitForNextWatchedAsset(options?: {
+        timeoutMs?: number;
+    }): Promise<WatchedAssetRecord>;
+    /**
      * Replaces the account set (and reconnects a disconnected wallet — unlike
      * switchAccount, which only reorders). Accounts are validated against the
      * backing node's eth_accounts; pass { allowUnknownAccounts: true } only
@@ -220,6 +349,10 @@ export declare class MockWalletController {
      * the reorder stays internal until the wallet reconnects.
      */
     switchAccount(address: Address): Promise<void>;
+    get isUnlocked(): boolean;
+    setUnlocked(unlocked: boolean): Promise<void>;
+    lock(): Promise<void>;
+    unlock(): Promise<void>;
     disconnect(): Promise<void>;
     reconnect(): Promise<void>;
     switchNetwork(chainId: number | Hex): Promise<void>;
@@ -236,8 +369,23 @@ export declare class MockWalletController {
     private fetchNodeAccounts;
     private assertAccountsKnownToNode;
     private assertOriginAllowed;
+    private assertHardwareWalletReady;
     private assertUserApproved;
     private permissionResponse;
+    private requestedPermissionKeys;
+    private assertSupportedPermissions;
+    private handleRequestPermissions;
+    private handleRevokePermissions;
+    private assertCoinbaseEnabled;
+    private assertCoinbaseConnected;
+    private assertAuthorizedAccount;
+    private buildCoinbaseSiweCapability;
+    private handleWalletConnect;
+    private handleWalletGetSubAccounts;
+    private handleWalletAddSubAccount;
+    private handleCoinbaseFetchPermissions;
+    private handleCoinbaseFetchPermission;
+    private handleWatchAsset;
     private handleRpcRequest;
 }
 //# sourceMappingURL=mock-wallet-controller.d.ts.map

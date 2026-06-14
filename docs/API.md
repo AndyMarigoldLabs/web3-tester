@@ -6,7 +6,12 @@ This package exposes three Playwright fixture families and a real-wallet adapter
 - `live-fixtures`: live testnet tests that sign with a runtime-only private key.
 - `real-wallet-fixtures`: real-MetaMask tests with automatic extension download and per-test cached profiles.
 - `real-wallet`: the imperative MetaMask adapter underneath the fixtures.
+- `real-wallet-extension`: generic Chromium extension launcher for non-MetaMask real-wallet adapters and custom Playwright control.
+- `real-wallet-extension-fixtures`: Playwright fixtures around generic Chromium extension sessions and cached profile clones.
+- `real-wallet-cache`: shared cached-profile builders and clone helper for MetaMask and generic Chromium wallet extensions.
 - `metamask-extension`: pinned MetaMask download/cache helpers.
+- `wallet-personas`: built-in major-wallet identities for injected and WalletConnect tests.
+- `safe`: Safe Transaction Service client and local Safe workflow harness.
 
 Fixtures are lazy: the mock provider is only injected when a test references the `wallet` fixture.
 
@@ -50,6 +55,30 @@ The wallet is wired so a dapp-driven `wallet_switchEthereumChain` routes all
 forwarded RPC to that chain's node, and `chains.get(84532)` gives the matching
 `ChainController`. User-supplied `walletOptions.chains` entries merge over the
 fixture extras (user wins per key; extras are never silently dropped).
+
+### Browser Projects
+
+The local injected fixtures use Playwright's active `page`, `context`, and
+`browser` fixtures, so they follow the current browser project. A normal
+Chromium/Firefox/WebKit matrix works:
+
+```ts
+import { defineConfig, devices } from '@playwright/test';
+
+export default defineConfig({
+  fullyParallel: true,
+  projects: [
+    { name: 'chromium', use: { ...devices['Desktop Chrome'] } },
+    { name: 'firefox', use: { ...devices['Desktop Firefox'] } },
+    { name: 'webkit', use: { ...devices['Desktop Safari'] } },
+  ],
+});
+```
+
+Use `npm run test:browsers` in this repo for focused self-test coverage of
+the browser-portable fixture surface. Real wallet extension fixtures are not
+part of that matrix: they launch Chromium extension contexts and should live
+in Chromium-only projects.
 
 ## Live Fixtures
 
@@ -179,6 +208,10 @@ by (seed phrase, password, extension version), verifies the imported account
 against the seed-derived address, and gives every test its own copy of that
 profile — parallel-safe and onboarding-free after the first run.
 
+Real wallet fixtures are Chromium-only. They throw during fixture setup when
+used from a Firefox or WebKit Playwright project, so exclude these specs from
+cross-browser projects and keep them in a dedicated Chromium project.
+
 ## MetaMask Extension Helpers
 
 ```ts
@@ -198,6 +231,10 @@ const extensionPath = await prepareMetaMaskExtension({
 manage the onboarded-profile cache directly for custom setups.
 `buildWalletProfile` takes the same required `headless` choice (and optional
 `generation`) as `launchRealWallet`.
+For non-MetaMask Chromium wallets, use `buildWalletExtensionProfile` from the
+root entry or `@marigoldlabs/web3-tester/real-wallet-cache`; it shares the
+same lock/ready-marker/clone machinery but delegates onboarding to a
+wallet-specific `setup.run(session)` callback.
 
 Both current MetaMask 13.x ("multichain" UI) and the older 12.x UI are
 supported as explicit configurations: the UI generation is derived from the
@@ -221,7 +258,7 @@ activity flows across both pinned UI generations (12.23.1 and 13.34.1):
 | `addNewAccount(name?)` | Next derived SRP account (13.x creates it on the wallet-details page and renames via the account-details route). On 13.x the create is a background dispatch the account-tree sync can drop, so the method settles the tree and retries; on huge wallets it is reliable but not instant. `switchAccount`/`renameAccount` narrow the virtualized 13.x picker via its search box and match the exact display name. |
 | `switchAccount(nameOrAddress)` | By display name (both gens) or address (best-effort on 13.x, whose cells show names). |
 | `renameAccount(current, new)` | |
-| `lock()` / `unlock(password?)` | |
+| `lock()` / `unlock(password?)` / `waitForUnlocked()` | `waitForUnlocked()` verifies the lock screen is gone without opening account details; use it when a test only needs to assert the wallet recovered from a lock. |
 | `resetAccount()` | Clears activity/nonce data (12.x Advanced; 13.x Developer tools, with a settings-search fallback). |
 | `toggleShowTestNetworks(on?)` | Idempotent with an explicit state. 13.x drives the toggle on the standalone `#/networks` page (the network picker popover hides it); enabling reveals the built-in testnets (e.g. Sepolia becomes selectable via `switchNetwork`). |
 | `importToken(token)` / `approveAddToken()` (alias `addNewToken()`) / `rejectAddToken()` | Manual import and `wallet_watchAsset` approve/reject. |
@@ -301,14 +338,157 @@ Confirmation flows open `chrome-extension://<id>/notification.html` on demand
 when MetaMask suppresses its popup (it does so whenever extension tabs are
 open), so they work regardless of window management.
 
+## Generic Real Wallet Extension Launcher
+
+```ts
+import { launchRealWalletExtension } from '@marigoldlabs/web3-tester/real-wallet-extension';
+
+const session = await launchRealWalletExtension({
+  extensionPath: process.env.RABBY_EXTENSION_PATH as string,
+  extensionName: 'Rabby Wallet',
+  profileDir: process.env.RABBY_PROFILE_DIR as string,
+  headless: false,
+});
+
+const popup = session.page ?? await session.openPage('popup.html');
+await session.close();
+```
+
+`launchRealWalletExtension` is the shared browser-launch seam for Rabby,
+Coinbase Wallet, Phantom, OKX, Trust, Brave, and other unpacked Chromium
+wallet extensions. It does not claim wallet-specific onboarding or
+confirmation selectors; those adapters should build on the returned
+`BrowserContext`, `extensionId`, `openPage()`, and manifest helpers.
+
+Options:
+
+| Option | Description |
+| --- | --- |
+| `extensionPath` | Required path to an unpacked Chrome extension directory. |
+| `profileDir` | Required persistent Chromium user data directory, or a Chrome profile directory. |
+| `extensionName` | Exact Chrome extension display name used if service-worker/runtime discovery cannot find the ID. Pass this for localized manifests. |
+| `extensionId` | Known extension ID; skips discovery. Useful for preconfigured profiles or extensions without service workers. |
+| `initialPage` | Extension page to open after launch. Defaults to the manifest action popup, browser action popup, options page, or side-panel path when present; pass `false` to open no extension page. |
+| `headless` | Required choice with no default: pass `true`/`false` here or set `WEB3_TESTER_REAL_WALLET_HEADLESS`. Uses full Chromium via `channel: 'chromium'`. |
+| `launchArgs` | Extra Chromium args appended after the extension loading args. |
+| `locale`, `slowMo`, `baseURL` | Forwarded to Playwright's persistent context launch. |
+
+Returned session:
+
+| Property / Method | Description |
+| --- | --- |
+| `context` | Persistent Playwright `BrowserContext`. |
+| `extensionId` | Resolved Chrome extension ID. |
+| `manifest` | Parsed `manifest.json`. |
+| `page` | The page opened from `initialPage`, if any. |
+| `extensionUrl(page?)` | Builds `chrome-extension://<id>/<page>`. |
+| `openPage(page?)` | Opens or reuses an extension page. |
+| `close()` | Closes the persistent browser context. |
+
+Helper exports include `readExtensionManifest`,
+`extensionManifestName`, `extensionManifestDefaultPage`, `extensionPageUrl`,
+`resolveExtensionPageUrl`, `extensionIdFromUrl`,
+`openRealWalletExtensionPage`, and `discoverRealWalletExtensionId`.
+
+For reusable real-wallet tests, prepare a non-MetaMask profile once and clone
+it per test:
+
+```ts
+import {
+  buildWalletExtensionProfile,
+  cloneWalletProfile,
+} from '@marigoldlabs/web3-tester/real-wallet-cache';
+
+const cached = await buildWalletExtensionProfile({
+  cacheKey: 'coinbase-wallet-anvil-seed-v1',
+  extensionPath: process.env.COINBASE_EXTENSION_PATH as string,
+  extensionName: 'Coinbase Wallet extension',
+  headless: false,
+  setup: {
+    run: async (session) => {
+      const popup = session.page ?? await session.openPage('popup.html');
+      // Wallet-specific onboarding/unlock/import selectors go here.
+      await popup.getByRole('button', { name: /unlock/i }).click();
+    },
+  },
+});
+
+const profileDir = await cloneWalletProfile(cached, '/tmp/coinbase-wallet-test-profile');
+```
+
+`cacheKey` is required and should include every external setup dependency
+(seed, private key label, network config, and callback version). The manifest
+name/version and extension path are included automatically. `waitForState`
+defaults to true when `setup` is provided and waits for extension IndexedDB or
+Local Extension Settings writes before closing; pass `waitForState: false`
+when setup does not mutate persisted extension state.
+
+For Playwright suites, use
+`@marigoldlabs/web3-tester/real-wallet-extension-fixtures` to get the same
+cache/clone behavior per test:
+
+```ts
+import {
+  expect,
+  test,
+} from '@marigoldlabs/web3-tester/real-wallet-extension-fixtures';
+
+test.use({
+  realWalletExtensionOptions: {
+    extensionPath: process.env.PHANTOM_EXTENSION_PATH,
+    extensionName: 'Phantom',
+    profileCacheKey: 'phantom-dev-wallet-v1',
+    headless: false,
+    profileSetup: {
+      run: async (session) => {
+        const popup = session.page ?? await session.openPage('popup.html');
+        // Wallet-specific onboarding/unlock/import selectors go here.
+        await popup.getByRole('button', { name: /unlock/i }).click();
+      },
+    },
+  },
+});
+
+test('uses a prepared extension profile', async ({ page, realWalletExtension }) => {
+  await page.goto('https://app.example.test');
+  expect(realWalletExtension.extensionId).toMatch(/^[a-p]{32}$/);
+});
+```
+
+Fixture options mirror `launchRealWalletExtension` plus:
+`profileDir` (explicit prepared profile, bypassing the cache),
+`profileCacheKey` (required without `profileDir`), `cacheDir`,
+`forceProfile`, `profileSetup`, and `waitForState`.
+
+Like `real-wallet-fixtures`, these fixtures are Chromium-only and fail fast
+from Firefox or WebKit projects.
+
 ## MockWalletController
 
 ```ts
 const wallet = new MockWalletController(page, rpcClient, {
   accounts: ['0x...'],
   chainId: 31337,
+  // Prefer personas for EIP-6963 metadata + provider flags/aliases.
+  persona: walletPersonas.rabby(),
+  additionalPersonas: [walletPersonas.coinbase(), walletPersonas.phantomEvm()],
   autoApprove: true,
   connected: true,
+  unlocked: true,
+  // Optional Ledger/Trezor-style behavior for signing/spend methods.
+  hardwareWallet: {
+    approvalDelayMs: 750,
+    deviceState: 'ready',
+    // methods defaults to EVM/Solana signing/spend methods.
+    // requiredApp / requiredApps customize wrong-app device messages.
+  },
+  // Optional Coinbase/Base Account provider methods. Auto-enabled by
+  // walletPersonas.coinbase() / walletProfiles.coinbase(); seed fixture data
+  // when tests need spend permissions or sub-accounts.
+  coinbase: {
+    permissions: [],
+    subAccounts: [],
+  },
   // Optional: more chains the wallet can switch to, keyed by chain id. Each
   // backend is an RpcClient (ChainController, PrivateKeyRpcClient, …) or an
   // http(s) RPC URL string (wrapped via httpRpcClient). The positional
@@ -335,6 +515,10 @@ Properties:
 | `currentChainId` | `Hex` | Current EIP-1193 chain ID. |
 | `providerInfo` | `WalletProviderInfo` | Primary EIP-6963 provider metadata. |
 | `providerInfos` | `WalletProviderInfo[]` | All announced provider metadata. |
+| `coinbasePermissions` | `CoinbasePermission[]` | Seeded Coinbase/Base Account spend permissions, cloned for test assertions. |
+| `coinbaseSubAccounts` | `CoinbaseSubAccount[]` | Seeded and generated Coinbase/Base Account sub-accounts, cloned for test assertions. |
+| `solanaAccounts` | `{ publicKey, pubkey, address }[]` | Visible Solana persona accounts for `solana_getAccounts` / `solana_requestAccounts`; empty while locked, disconnected, or when no Solana persona is configured. |
+| `isUnlocked` | `boolean` | Current software wallet lock state exposed through `_metamask.isUnlocked()` and `metamask_getProviderState`. |
 
 Methods:
 
@@ -342,16 +526,22 @@ Methods:
 | --- | --- |
 | `injectMockProvider()` | Adds the RPC bridge and injects `window.ethereum` context-wide (popups and dapp-opened tabs included). One controller per browser context. |
 | `autoApprove(enabled)` | Toggles automatic approval for signing methods, `eth_requestAccounts`, and `wallet_*` prompt methods. |
+| `configureHardwareWallet(options)` | Enables or disables deterministic Ledger/Trezor-style device simulation. `true` uses defaults; an object can set `approvalDelayMs`, `deviceState`, method coverage, and `requiredApp` / `requiredApps` wrong-app messages. |
+| `configureCoinbaseWallet(options)` | Enables, disables, or reseeds Coinbase/Base Account RPC simulation after construction. Objects can set seeded spend permissions, sub-accounts, and default generated sub-account factory data. |
+| `setHardwareWalletState(state)` | Sets `ready`, `locked`, `wrong-app`, `blind-signing-disabled`, or `disconnected` and enables hardware simulation. Non-ready states reject matching requests. |
+| `setHardwareWalletApprovalDelay(ms)` | Sets the ready-device confirmation delay. |
+| `lock()` / `unlock()` / `setUnlocked(boolean)` | Simulates the wallet software lock. Locking keeps chain connectivity, hides accounts, emits `accountsChanged: []`, rejects approval-gated account/sign/spend prompts with `4100`, and makes `_metamask.isUnlocked()` false. Unlocking restores accounts for connected wallets. |
 | `approveNext(methods?, match?)` | Arms approval for the next matching request while autoApprove is off — the explicit per-call grant for real-key wallets. `match(method, params)` binds the grant to an expected payload. Queued rejections and holds take precedence; grants do not expire until consumed. |
 | `simulateRejection(methods?, message?)` | Rejects the next matching request with code `4001`. The default method set covers all approval-gated methods. |
 | `holdNextRequest(methods?)` | Keeps the next matching request pending until the returned `HeldRequest` is approved or rejected — for "confirm in your wallet" UI states. |
 | `waitForNextTransaction(options?)` | Resolves with the hash of the next transaction the page submits. |
+| `waitForNextWatchedAsset(options?)` | Resolves with the next approved `wallet_watchAsset` request record. |
 | `setAccounts(accounts, { allowUnknownAccounts? })` | Replaces the account set, **reconnects a disconnected wallet**, validates against the node's `eth_accounts`, and emits `accountsChanged`. |
 | `switchAccount(address)` | Re-selects an existing account: moves it to index 0 (MetaMask's most-recently-selected-first order) and emits `accountsChanged`. No event when already selected; unlike `setAccounts`, does **not** reconnect while disconnected. |
 | `currentAccounts` | Current account list; index 0 is the selected account. |
 | `disconnect()` | Emits `accountsChanged` and `disconnect`; signing while disconnected throws `4100`. |
 | `reconnect()` | Emits `connect` and `accountsChanged`. |
-| `switchNetwork(chainId)` | Updates chain ID, marks it known, and emits `chainChanged` (no event for a same-chain switch). |
+| `switchNetwork(chainId)` | Updates chain ID, marks it known, and emits `chainChanged` (injected EVM providers also fan out legacy `networkChanged`; no event for a same-chain switch). |
 | `addChain(chainId, backend)` | Test-side chain registration (Synpress `addNetwork` analogue): no approval gate, no probe, re-registration overwrites. |
 | `backedChainIds` | Chain ids that currently have an RPC backend, canonical hex. |
 | `handleExternalRequest(request, { origin }?)` | Dispatch a request from a non-injected transport (e.g. WalletConnect) through the same approval gating; `allowedOrigins` is enforced against `origin`. |
@@ -359,14 +549,54 @@ Methods:
 
 Transaction recording: `sentTransactions: Hex[]` and
 `sentTransactionRequests: SentTransactionRecord[]`.
+Approved token-watch prompts are recorded in
+`watchedAssets: WatchedAssetRecord[]`; call
+`waitForNextWatchedAsset()` before triggering the dapp action to await the
+next approved `wallet_watchAsset` request. `wallet_watchAsset` validates the
+request object before prompting; malformed requests and invalid ERC-20
+addresses return `-32602` without consuming queued approvals or recording an
+asset.
 
 Chain semantics follow MetaMask: dapp-initiated `wallet_switchEthereumChain`
 validates first (`-32602`), then throws `4902` for unknown chains *before*
 any approval prompt; `wallet_addEthereumChain` requires `rpcUrls` (a
 non-empty array of valid URLs, per EIP-3085), registers, and switches;
-`wallet_revokePermissions` disconnects. Unknown `wallet_*` methods return
+`wallet_requestPermissions` and `wallet_revokePermissions` support
+`eth_accounts` permission objects (and keep the legacy no-param path as
+`eth_accounts`); unsupported permission keys return `4200` without changing
+connection state. `wallet_revokePermissions` revokes account authorization
+when `eth_accounts` is revoked: `eth_accounts` becomes empty and
+`accountsChanged` emits `[]`, while EIP-1193 chain connectivity stays intact
+(`isConnected()` remains true and no `disconnect` event fires). Unknown
+`wallet_*` methods return
 `4200` instead of leaking node errors; all other unhandled methods are
 forwarded to the **active chain's** RPC backend.
+
+Injected EVM providers expose the common EIP-1193/EventEmitter method shape:
+`request`, `enable`, legacy `send(method, params)`, `send(payload)`,
+`send(payload, callback)`, `send(payload[], callback)`,
+`sendAsync(payload, callback)`, `sendAsync(payload[], callback)`, `on`,
+`once`, `addListener`, `removeListener`, `off`, `removeAllListeners`,
+`listeners`, and `listenerCount`. Batch payload arrays resolve to result
+arrays for promise-style `send` and JSON-RPC response arrays for callback
+style `send`/`sendAsync`, including per-payload `error` objects when only part
+of a batch fails. Already-connected wallets emit an initial
+`connect` event after page scripts have had a chance to attach listeners, and
+subsequent `connect`, `disconnect`, `accountsChanged`, and `chainChanged`
+events stay synchronized across `window.ethereum`, EIP-6963 providers, and
+legacy provider aliases. `chainChanged` also emits the legacy
+`networkChanged` alias with the decimal `networkVersion` payload for older
+dapps.
+`eth_subscribe` and `eth_unsubscribe` are intentionally not implemented; they
+return a wallet-shaped `4200` instead of forwarding to the backing HTTP RPC
+node. Use direct viem/WebSocket clients when a test needs subscription
+streams.
+`walletOptions.unlocked: false` or `wallet.lock()` simulates a locked software
+wallet without disconnecting from the chain: `isConnected()` remains true,
+`eth_accounts`, `wallet_getPermissions`, `selectedAddress`, and
+`metamask_getProviderState.accounts` are empty, `_metamask.isUnlocked()` and
+`metamask_getProviderState.isUnlocked` are false, and approval-gated
+account/sign/spend prompts return `4100` until `wallet.unlock()`.
 
 Account semantics: `eth_sendTransaction` rejects a `from` outside
 `currentAccounts` with `4100` (MetaMask-faithful — anvil would happily sign
@@ -377,6 +607,77 @@ best-effort under `anvil --auto-impersonate`). Impersonated accounts
 (`chain.impersonateAccount`) validate without any flag because anvil lists
 them — sends work, but `personal_sign`/typed-data still fail node-side with
 `-32602` since anvil holds no key.
+
+Hardware-wallet simulation runs after a request is otherwise approved: queued
+rejections still win, `approveNext` arms the user approval while preserving
+device checks, and `holdNextRequest` remains an explicit manual gate. The
+default hardware method set covers `eth_sendTransaction`, `eth_sign`,
+`personal_sign`, `eth_signTypedData_v3`, `eth_signTypedData_v4`,
+`wallet_sendCalls`, and Solana signing methods such as `solana_signIn`,
+`solana_signMessage`, and `solana_signTransaction`; override `methods` to
+narrow or broaden it.
+`wrong-app` errors infer the required app from the method (`Ethereum` for EVM,
+`Solana` for `solana_*` methods), with `requiredApp` and method-specific
+`requiredApps` overrides for custom apps. The same simulation applies to
+injected-provider requests and external transports such as WalletConnect via
+`handleExternalRequest`.
+
+### Coinbase/Base Account methods
+
+`walletPersonas.coinbase()` and `walletProfiles.coinbase()` auto-enable the
+Coinbase/Base Account provider methods: `wallet_connect`,
+`wallet_addSubAccount`, `wallet_getSubAccounts`,
+`coinbase_fetchPermissions`, and `coinbase_fetchPermission`. Other personas
+return `4200` for those methods unless `coinbase: true` or a `coinbase` config
+object is passed.
+
+Seed spend permissions and sub-accounts through `walletOptions.coinbase`,
+`walletProfiles.coinbase({ coinbase: ... })`, or
+`wallet.configureCoinbaseWallet(...)`:
+
+```ts
+test.use({
+  walletOptions: walletProfiles.coinbase({
+    coinbase: {
+      permissions: [{
+        createdAt: 1_700_000_000,
+        permissionHash: `0x${'11'.repeat(32)}`,
+        signature: `0x${'aa'.repeat(65)}`,
+        spendPermission: {
+          account: '0x0000000000000000000000000000000000000001',
+          spender: '0x0000000000000000000000000000000000000002',
+          token: '0x0000000000000000000000000000000000000003',
+          allowance: '1000000000000000000',
+          period: 86_400,
+          start: 1_700_000_000,
+          end: 4_102_444_800,
+          salt: '1',
+          extraData: '0x',
+        },
+      }],
+      subAccounts: [{
+        address: '0x0000000000000000000000000000000000000004',
+        account: '0x0000000000000000000000000000000000000001',
+        domain: 'https://app.example.com',
+        factory: '0x0000000000000000000000000000000000000005',
+        factoryData: '0x1234',
+      }],
+    },
+  }),
+});
+```
+
+`wallet_connect` returns Coinbase's account-object connection response and
+supports the `signInWithEthereum` capability with a deterministic SIWE message
+signed by the backing chain account. `wallet_addSubAccount` supports `create`
+and `deployed` account configs, stores the result for later
+`wallet_getSubAccounts` calls, and is approval-gated. `coinbase_fetchPermissions`
+filters active seeded spend permissions by spender, chain, optional account,
+and decimal cursor pagination; `coinbase_fetchPermission` fetches one
+permission by hash. Account-linked Coinbase methods respect software lock
+state: locked wallets return `4100` for `wallet_connect`,
+`wallet_addSubAccount`, `wallet_getSubAccounts`,
+`coinbase_fetchPermissions`, and `coinbase_fetchPermission`.
 
 ### EIP-5792 batch calls
 
@@ -435,8 +736,14 @@ Supported wallet methods include:
 - `eth_requestAccounts`
 - `eth_chainId`
 - `net_version`
+- `eth_subscribe` / `eth_unsubscribe` return `4200` (subscription streams are not implemented)
 - `wallet_getPermissions`
-- `wallet_requestPermissions`
+- `wallet_requestPermissions` (`eth_accounts` permission only; unsupported permissions return `4200`)
+- `wallet_connect` (Coinbase/Base Account simulation)
+- `wallet_addSubAccount` (Coinbase/Base Account simulation)
+- `wallet_getSubAccounts` (Coinbase/Base Account simulation)
+- `coinbase_fetchPermissions` (Coinbase/Base Account simulation)
+- `coinbase_fetchPermission` (Coinbase/Base Account simulation)
 - `wallet_switchEthereumChain`
 - `wallet_addEthereumChain`
 - `wallet_watchAsset`
@@ -447,9 +754,207 @@ Supported wallet methods include:
 - `eth_sign`
 - `eth_signTypedData_v3` (signed via the backend's v4 path)
 - `eth_signTypedData_v4`
-- `wallet_revokePermissions`
+- `wallet_revokePermissions` (`eth_accounts` permission only; unsupported permissions return `4200`)
 
 `eth_signTypedData` (legacy v1) returns `4200`.
+
+## Wallet Personas
+
+```ts
+import { walletPersonas, walletProfiles } from '@marigoldlabs/web3-tester/wallet-personas';
+
+test.use({
+  walletOptions: {
+    persona: walletPersonas.rabby(),
+    additionalPersonas: [
+      walletPersonas.coinbase(),
+      walletPersonas.phantomEvm(),
+      walletPersonas.solflare(),
+      walletPersonas.bitget(),
+      walletPersonas.tokenPocket(),
+      walletPersonas.safePal(),
+      walletPersonas.binance(),
+      walletPersonas.safe(),
+    ],
+  },
+});
+```
+
+Built-in personas cover MetaMask, Rabby, Coinbase Wallet, Phantom EVM,
+Rainbow, OKX, Trust, Brave, Zerion, Backpack, Solflare, Ledger, Trezor, Safe,
+Bitget, TokenPocket, SafePal, Binance Wallet, imToken, MathWallet, Frame,
+Enkrypt, Core, Frontier, OneKey, CTRL, Uniswap Wallet, Argent, Exodus, and
+Fireblocks. A persona supplies EIP-6963 metadata,
+provider boolean flags (for example `isRabby`, `isCoinbaseWallet`,
+`isPhantom`, `isBitKeep`, `isTokenPocket`, `isBinance`,
+`isUniswapWallet`, `isArgent`, `isExodus`, `isFireblocks`), optional global
+aliases (for example `window.phantom.ethereum`), legacy
+`window.ethereum.providers` entries when multiple personas are configured, and
+WalletConnect peer metadata. Each injected EVM provider also exposes a frozen
+`provider.info` object with the same `{ uuid, name, icon, rdns }` identity used
+for EIP-6963 announcements, including entries inside
+`window.ethereum.providers` and known alias globals. The
+controller behavior remains shared: persona selection changes how the wallet
+is discovered, not how approvals or chain routing are handled. Legacy
+`providerInfo` / `additionalProviders` still work for EIP-6963-only metadata.
+Set `evm: false` on a custom persona for Solana-only wallets; such personas
+skip `window.ethereum`, EIP-6963 announcements, and legacy EVM provider arrays.
+Known globals are included where they are part of common EVM discovery:
+`window.coinbaseWalletExtension`, `window.phantom.ethereum`,
+`window.okxwallet`, `window.trustwallet`, `window.backpack.ethereum`,
+`window.bitkeep.ethereum`, `window.tokenpocket.ethereum`,
+`window.safepalProvider`, `window.binancew3w.ethereum`, `window.imToken`,
+`window.enkrypt.providers.ethereum`, `window.avalanche`,
+`window.frontier.ethereum`, `window.$onekey.ethereum`,
+`window.ctrl.ethereum`, and `window.xfi.ethereum`.
+The Brave persona sets both `isBraveWallet` and `isMetaMask` for
+MetaMask-compatible Brave Wallet selectors.
+Phantom, Backpack, SafePal, and Solflare also expose lightweight Solana provider surfaces:
+`window.phantom.solana`, `window.solana` for Phantom, and
+`window.backpack.solana` for Backpack, `window.safepal` for SafePal, and
+`window.solflare` for Solflare. Solflare is Solana-only (`evm: false`), so it
+does not create an Ethereum provider. They
+also register Wallet Standard wallets via the `wallet-standard:register-wallet` /
+`wallet-standard:app-ready` event handshake used by Solana Wallet Adapter.
+The Solana provider aliases also expose the same frozen `provider.info`
+identity object as their EVM counterpart or persona.
+The simulated Solana provider supports `connect`, `disconnect`, `request`,
+`signIn`, `signMessage`, `signTransaction`, `signAllTransactions`,
+`signAndSendTransaction`, `signAndSendAllTransactions`, and the same
+EventEmitter-style listener aliases
+(`on`, `once`, `addListener`, `removeListener`, `off`, `removeAllListeners`,
+`listeners`, `listenerCount`). `request({ method: 'getAccounts' })` and
+`request({ method: 'requestAccounts' })` return base58 public-key strings;
+`solana_getAccounts` and `solana_requestAccounts` return account objects with
+`publicKey`, `pubkey`, and `address` for namespace-prefixed wallet probes.
+`connect({ onlyIfTrusted: true })` and Wallet
+Standard `connect({ silent: true })` reject before the first successful
+authorization, then reconnect silently after a prior `connect`/`signIn` even
+if the live session was disconnected. Controller `wallet.lock()` hides a
+connected direct Solana provider by clearing `publicKey`/`isConnected` and
+emitting Wallet Standard `accounts: []`; `wallet.unlock()` restores providers
+that were connected before the lock, while `wallet.disconnect()` emits the
+Solana provider `disconnect` event. First-time Solana `connect`, direct
+Solana signing, Solana `signIn`, and Wallet Standard signing calls route
+through the same controller approval, rejection, hold, and hardware-wallet
+gates as EVM requests (`approveNext('solana_signMessage')`,
+`holdNextRequest('solana_signTransaction')`, etc.). Wallet Standard registration
+includes `solana:signIn`, `solana:signMessage`, `solana:signTransaction`, and
+`solana:signAndSendTransaction`. It is intended for wallet selector,
+connection, and auth/signing UI tests; it does not provide a Solana validator
+or real Solana transaction submission. Custom personas can override the
+default Wallet Standard chains through `solana: { chains: [...] }`.
+
+`walletProfiles` returns fixture-ready option objects for the same wallets.
+Most profiles set only `persona`; `walletProfiles.coinbase({ coinbase })`
+can also seed Coinbase/Base Account data, while `walletProfiles.ledger()` and
+`walletProfiles.trezor()` enable `hardwareWallet` by default:
+
+```ts
+test.use({
+  walletOptions: walletProfiles.trezor({
+    hardwareWallet: { deviceState: 'blind-signing-disabled', approvalDelayMs: 0 },
+  }),
+});
+```
+
+## Safe
+
+`@marigoldlabs/web3-tester/safe` provides the Safe Transaction Service surface
+needed for multisig workflow tests. Transaction Service support is first-class:
+the REST client can propose transactions, submit confirmations, fetch a
+transaction by Safe transaction hash, list a Safe's multisig transactions, and
+list confirmations.
+
+```ts
+import {
+  SafeTransactionServiceClient,
+  SafeWalletHarness,
+  hashSafeTransactionTypedData,
+} from '@marigoldlabs/web3-tester/safe';
+
+const service = new SafeTransactionServiceClient({
+  // Include the prefix your deployment exposes, commonly /api/v1.
+  baseUrl: 'https://safe-transaction-sepolia.safe.global/api/v1',
+  chainId: 11155111,
+});
+
+const safe = new SafeWalletHarness({
+  safeAddress,
+  owners: [owner1, owner2],
+  threshold: 2,
+  chainId: 11155111,
+  transactionService: service,
+});
+
+const proposed = await safe.proposeTransaction({
+  proposer: owner1,
+  transaction: { to, value: 1n, data: '0x' },
+  origin: 'qa-run',
+});
+await safe.confirmTransaction(proposed.safeTxHash, { owner: owner2, signature });
+```
+
+For hermetic tests use `InMemorySafeTransactionService`; it implements the
+same propose/confirm/list/get contract without a network service. When a
+`SafeWalletHarness` is constructed with an `rpcClient`, `executeTransaction`
+enforces the configured threshold, broadcasts the transaction data from the
+executor address through `eth_sendTransaction`, and marks the local service
+record executed when the service supports `markExecuted`.
+
+`SafeWalletHarness` defaults to protocol-compatible EIP-712 Safe transaction
+hashes. `SafeTransactionServiceClient` also computes EIP-712 `safeTxHash`
+values when `chainId` is configured; otherwise pass `safeTxHash` explicitly
+for real deployments. Use `hashSafeTransactionTypedData(safeAddress, chainId,
+tx)` or `buildSafeTransactionTypedData(...)` when tests need to assert the
+Safe.sol hash input directly. `hashSafeTransactionData` remains as a
+deterministic fixture hash, and can be selected on the harness/client with
+`safeTxHashStrategy: 'fixture'`.
+
+```ts
+const safeTxHash = hashSafeTransactionTypedData(safeAddress, 11155111, {
+  to,
+  value: 1n,
+  data: '0x',
+  nonce: 0,
+});
+```
+
+Safe App iframe simulation is available through `injectSafeAppBridge(page,
+safe, options?)`. It installs a parent-page `postMessage` responder compatible
+with Safe Apps SDK v1 messages (`{ id, method, params, env: { sdkVersion } }`)
+and returns SDK-shaped success/error envelopes. Supported methods include
+`getSafeInfo`, `getChainInfo`, `sendTransactions`, `getTxBySafeTxHash`,
+`rpcCall`, `signMessage`, `signTypedMessage`, `getOffChainSignature`,
+`wallet_getPermissions`, `wallet_requestPermissions`, `requestAddressBook`,
+and `getSafeBalances`.
+
+`getSafeInfo` returns the extended Safe Apps SDK shape: `safeAddress`,
+`chainId`, `threshold`, `owners`, `isReadOnly`, `nonce`, `implementation`,
+`modules`, `fallbackHandler`, `guard`, and `version`. Override the mutable
+metadata through `options.safeInfo`; otherwise the bridge uses the harness
+owners/threshold/current nonce and inert defaults. `getChainInfo` returns the
+Safe Gateway `blockExplorerUriTemplate.txHash` key; the bridge still accepts a
+legacy `tx` option alias and maps it to `txHash`. `getSafeBalances` returns
+`{ fiatTotal, items }`; pass either that full object or a bare balance-item
+array, which is wrapped as `{ fiatTotal: '0', items }` for compatibility.
+When `options.allowedOrigins` is configured, untrusted origins and missing or
+`null` iframe origins are rejected. Multi-call `sendTransactions` requests are
+encoded as a delegatecall to Safe MultiSendCallOnly
+(`SAFE_MULTISEND_CALL_ONLY_ADDRESS`); pass `options.multiSendAddress` for
+custom deployments.
+
+```ts
+await page.setContent('<iframe id="safe-app"></iframe>');
+await injectSafeAppBridge(page, safe, {
+  chainInfo: { chainName: 'Anvil Local', shortName: 'anvil' },
+  addressBook: [{ address: owner1, chainId: '31337', name: 'Owner 1' }],
+  balances: { fiatTotal: '0', items: [] },
+});
+await page.locator('#safe-app').evaluate((iframe, srcdoc) => {
+  (iframe as HTMLIFrameElement).srcdoc = srcdoc;
+}, appHtml);
+```
 
 ## WalletConnect
 
@@ -457,7 +962,8 @@ Supported wallet methods include:
 wallet peer that pairs with a dapp's AppKit/WC modal and answers every
 `session_request` through the `MockWalletController` — so
 `approveNext`/`autoApprove`/`holdNextRequest`/`simulateRejection` and
-`sentTransactions`/`waitForNextTransaction` govern WC traffic exactly like
+`sentTransactions`/`waitForNextTransaction` plus
+`watchedAssets`/`waitForNextWatchedAsset` govern WC traffic exactly like
 injected traffic, in mock and live modes. Requires the optional peers
 (`npm i -D @walletconnect/sign-client @walletconnect/utils
 @walletconnect/types`); the core install stays dependency-free, but note
@@ -468,6 +974,7 @@ consumers' `npm install <git>` will fetch.
 const wc = await WalletConnectWallet.create({
   wallet,
   projectId: process.env.WEB3_TESTER_WC_PROJECT_ID!,
+  persona: walletPersonas.coinbase(),
 });
 try {
   await page.getByText('WalletConnect').click();   // open the QR view
@@ -488,16 +995,69 @@ emitted); off-namespace chains answer `5100`; wallet errors
 enforced against the relay's verifyContext origin (`enforceOrigins: false`
 opts out — when Verify reports UNKNOWN validation the origin is unattested).
 Wallet events push to sessions (`chainChanged` extends the namespace first,
-like MetaMask mobile); `wallet.disconnect()` ends WC sessions too. One-Click
-Auth (SIWE) dapps take the `wc_sessionPropose` fallback — this wallet
-deliberately never registers a `session_authenticate` listener. Storage is
-in-memory (nothing on disk); SignClient init sets `disableRequestQueue` so a
-held request cannot starve later ones.
+like MetaMask mobile; EVM `accountsChanged` refreshes non-empty CAIP account
+lists in the namespace before emitting; Solana namespaces receive
+`accountsChanged` with Solana public keys or `[]` when the wallet
+locks/disconnects); `wallet.disconnect()`
+ends WC sessions too. One-Click
+Auth (SIWE) `session_authenticate` is handled by default: the wallet signs
+CAIP-122 Cacao objects through the same `eth_requestAccounts` and
+`personal_sign` approval gates, enforces the approved EIP-155 chains, and
+stores any authenticated session returned by SignClient. Pass
+`sessionAuthenticate: false` to `WalletConnectWallet.create()` to use
+sign-client's fallback session-proposal + `personal_sign` path instead.
+Storage is in-memory (nothing on disk); SignClient init sets
+`disableRequestQueue` so a held request cannot starve later ones. When a test
+creates a dapp SignClient and a wallet SignClient in the same Node process, keep
+their WalletConnect Core instances isolated with distinct
+`customStoragePrefix` values; `WalletConnectWallet.create()` accepts
+`customStoragePrefix` and otherwise assigns a unique web3-tester wallet prefix.
 
-URI extraction reads AppKit's `wui-qr-code[uri]` attribute (the same
-contract Reown's own E2E suite uses, but still an internal — pass
-`selector` or a `getUri(page)` hook for other modals; AppKit's
-`copy-wc2-uri` button is the clipboard fallback).
+The default EVM namespace advertises the mock wallet's modern EVM surface,
+including EIP-5792 batch methods: `wallet_getCapabilities`,
+`wallet_sendCalls`, `wallet_getCallsStatus`, and `wallet_showCallsStatus`.
+Those requests dispatch through the same `MockWalletController` handlers as
+injected traffic, so batch approval gates, atomic execution, status records,
+and `wallet.sentCallBatches` work over WalletConnect too.
+
+When the selected persona is `walletPersonas.coinbase()`, the approved EVM
+namespace also advertises Coinbase/Base Account methods by default:
+`wallet_connect`, `wallet_addSubAccount`, `wallet_getSubAccounts`,
+`coinbase_fetchPermissions`, and `coinbase_fetchPermission`. Pass
+`methods: [...]` to `WalletConnectWallet.create()` when a test needs a custom
+namespace instead.
+
+When the selected persona has a Solana provider (`walletPersonas.phantomEvm()`,
+`walletPersonas.backpack()`, `walletPersonas.safePal()`,
+`walletPersonas.solflare()`), WalletConnect also advertises a `solana`
+namespace by default. Personas with `evm: false` (Solflare) publish Solana
+without `eip155` unless `evm: true` is passed explicitly. Override or force
+Solana with `solana: { chains, publicKey, methods, events }`, or pass
+`solana: false` to publish only EVM namespaces. Supported Solana WC methods are
+`solana_getAccounts`, `solana_requestAccounts`, `solana_signIn`,
+`solana_signMessage`, `solana_signTransaction`, `solana_signAllTransactions`, and
+`solana_signAndSendTransaction`; the compatibility set also includes
+`solana_signAndSendAllTransactions` for wallets/dapps that expose Phantom-style
+batch send APIs. These requests use the same controller gates as EVM WC traffic:
+`autoApprove(false)`, `approveNext('solana_signIn')`,
+`approveNext('solana_signMessage')`, `holdNextRequest('solana_signTransaction')`,
+`simulateRejection(...)`, and hardware-wallet simulation all apply. Responses
+are deterministic mock signatures; no Solana RPC backend is started.
+
+URI extraction keeps AppKit's `wui-qr-code[uri]` contract as the first-class
+path, then probes generic URI attributes (`uri`, `data-uri`, `href`, `value`),
+text/value elements (`textarea`, `input`, `code`, `pre`, `[data-wc-uri]`),
+and AppKit's `copy-wc2-uri` clipboard button. For unusual modals pass
+`selector` / `selectors`, `textSelectors`, `copyButtonSelector`, or a custom
+`getUri(page)` hook.
+
+Personas also carry WalletConnect launch templates where the wallet ecosystem
+has a stable URI format. Use `formatWalletConnectUriForPersona(uri, persona)`
+for mobile handoff tests, or pass `'qrCode'` as the third argument when a
+wallet's QR flow should preserve the raw `wc:` URI. The helper falls back to
+the raw URI when no verified template is configured, and
+`walletConnectMetadataForPersona()` intentionally returns only standard
+SignClient peer metadata (`name`, `description`, `url`, `icons`).
 
 Pairing needs the real relay: the live suite is env-gated on
 `WEB3_TESTER_WC_PROJECT_ID` (free Reown project id) and never gates CI; the
@@ -631,13 +1191,17 @@ Two guards keep a misconfigured client from signing where it should not:
   `eth_sendRawTransaction`), the client verifies the RPC endpoint's
   `eth_chainId` matches the configured chain and fails loudly on mismatch.
   Verification is cached after the first success.
+- `eth_sendTransaction` only signs when `from` is omitted or matches the
+  client's account. RPC-shaped typed transaction fields are preserved:
+  `type` (`0x0`-`0x4` or viem names), `accessList`, blob fee/hash fields, and
+  `authorizationList` are parsed before the transaction is signed.
 
 It supports:
 
 - `personal_sign` (hex payloads are signed as raw bytes; both `[message, address]` and legacy `[address, message]` param orders)
 - `eth_sign`
 - `eth_signTypedData_v3` / `eth_signTypedData_v4`
-- `eth_sendTransaction`
+- `eth_sendTransaction` (`from`-checked; typed transaction fields preserved)
 - `eth_sendRawTransaction` (chain-verified like `eth_sendTransaction`)
 - read-only RPC forwarding through Viem public client
 

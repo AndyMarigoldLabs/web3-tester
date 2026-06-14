@@ -159,7 +159,7 @@ test('adjustTotalSupply shifts supply by the delta, both directions, and underfl
 
 test('Vyper-layout balances are discovered through the reversed hash order', async () => {
   const deployed = await chain.deployContract({
-    abi: VYPER_LAYOUT_TOKEN_ABI as never,
+    abi: VYPER_LAYOUT_TOKEN_ABI,
     bytecode: VYPER_LAYOUT_TOKEN_BYTECODE,
   });
 
@@ -169,25 +169,25 @@ test('Vyper-layout balances are discovered through the reversed hash order', asy
 
 test('computed balanceOf (shares tokens) fails with Erc20DealError and leaves storage clean', async () => {
   const deployed = await chain.deployContract({
-    abi: SHARES_TOKEN_ABI as never,
+    abi: SHARES_TOKEN_ABI,
     bytecode: SHARES_TOKEN_BYTECODE,
   });
   const shares = () =>
     chain.client.readContract({
       address: deployed.address,
-      abi: SHARES_TOKEN_ABI as never,
+      abi: SHARES_TOKEN_ABI,
       functionName: 'sharesOf',
       args: [USER],
-    } as never);
+    });
 
   await chain.client.writeContract({
     address: deployed.address,
-    abi: SHARES_TOKEN_ABI as never,
+    abi: SHARES_TOKEN_ABI,
     functionName: 'mintShares',
     args: [USER, 5n],
     account: (await chain.accounts())[0]!,
     chain: chain.client.chain,
-  } as never);
+  });
 
   const error = await chain.dealErc20(deployed.address, USER, 100n).catch((e) => e);
   expect(error).toBeInstanceOf(Erc20DealError);

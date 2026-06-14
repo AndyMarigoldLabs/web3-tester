@@ -10,6 +10,29 @@
 // `--workers=N` to override for a faster (flakier) local run.
 import { spawnSync } from 'node:child_process';
 
+const passthroughArgs = [];
+let benchmark = ['1', 'true', 'yes', 'on'].includes((process.env.WEB3_TESTER_BENCHMARK ?? '').toLowerCase());
+let benchmarkOutput = process.env.WEB3_TESTER_BENCHMARK_OUTPUT;
+
+for (const arg of process.argv.slice(2)) {
+  if (arg === '--benchmark') {
+    benchmark = true;
+    continue;
+  }
+  if (arg.startsWith('--benchmark-output=')) {
+    benchmark = true;
+    benchmarkOutput = arg.slice('--benchmark-output='.length);
+    continue;
+  }
+  passthroughArgs.push(arg);
+}
+
+if (benchmark) {
+  process.stderr.write(
+    `web3-tester benchmark enabled${benchmarkOutput ? ` (${benchmarkOutput})` : ''}\n`,
+  );
+}
+
 const result = spawnSync(
   'npx',
   [
@@ -19,13 +42,15 @@ const result = spawnSync(
     'real-wallet-smoke',
     '--workers=1',
     '--retries=1',
-    ...process.argv.slice(2),
+    ...passthroughArgs,
   ],
   {
     stdio: 'inherit',
     shell: process.platform === 'win32',
     env: {
       ...process.env,
+      ...(benchmark ? { WEB3_TESTER_BENCHMARK: 'true' } : {}),
+      ...(benchmarkOutput ? { WEB3_TESTER_BENCHMARK_OUTPUT: benchmarkOutput } : {}),
       WEB3_TESTER_REAL_WALLET_SMOKE: 'true',
       WEB3_TESTER_REAL_WALLET_HEADLESS: process.env.WEB3_TESTER_REAL_WALLET_HEADLESS ?? 'false',
     },

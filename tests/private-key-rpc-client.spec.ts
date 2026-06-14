@@ -148,10 +148,9 @@ test('eth_sendTransaction without a transaction object throws', async () => {
 });
 
 test.describe('chain guard', () => {
-  // anvil.spec.ts uses 19100 + 20w + {0..3}; this band sits at offset 10-12
-  // mod 20 from the same stride, so the two can never collide at any pair of
-  // worker indices.
-  const basePort = (workerIndex: number) => 19510 + workerIndex * 20;
+  // anvil.spec.ts uses sub-offsets 0..3, erc20.spec.ts uses 4..5, and
+  // mock-wallet-multichain.spec.ts uses 13..19; this spec owns 6..9.
+  const basePort = (workerIndex: number) => 19506 + workerIndex * 20;
 
   test('refuses production chains without allowMainnet', () => {
     expect(
@@ -243,6 +242,88 @@ test.describe('chain guard', () => {
 
       expect(hash).toMatch(/^0x[0-9a-f]{64}$/);
       expect(matched.sentTransactions).toEqual([hash]);
+    } finally {
+      await anvil.stop();
+    }
+  });
+
+  test('refuses eth_sendTransaction from an account the client does not hold', async ({}, testInfo) => {
+    const anvil = await AnvilInstance.start({
+      port: basePort(testInfo.workerIndex) + 2,
+      chainId: 31337,
+      silent: true,
+    });
+
+    try {
+      const matched = new PrivateKeyRpcClient({
+        privateKey: PRIVATE_KEY,
+        chain: foundry,
+        rpcUrl: anvil.rpcUrl,
+      });
+      const foreign = '0x0000000000000000000000000000000000000001';
+
+      await expect(
+        matched.request({
+          method: 'eth_sendTransaction',
+          params: [{ from: foreign, to: account.address, value: '0x1' }],
+        }),
+      ).rejects.toMatchObject({ code: 4100 });
+      expect(matched.sentTransactions).toHaveLength(0);
+    } finally {
+      await anvil.stop();
+    }
+  });
+
+  test('preserves RPC-shaped typed transaction fields', async ({}, testInfo) => {
+    const anvil = await AnvilInstance.start({
+      port: basePort(testInfo.workerIndex) + 3,
+      chainId: 31337,
+      silent: true,
+    });
+
+    try {
+      const matched = new PrivateKeyRpcClient({
+        privateKey: PRIVATE_KEY,
+        chain: foundry,
+        rpcUrl: anvil.rpcUrl,
+      });
+      const accessList = [
+        {
+          address: account.address,
+          storageKeys: [`0x${'00'.repeat(32)}`],
+        },
+      ] as const;
+
+      const hash = (await matched.request({
+        method: 'eth_sendTransaction',
+        params: [{
+          accessList,
+          chainId: '0x7a69',
+          from: account.address,
+          gasPrice: '0x3b9aca00',
+          to: account.address,
+          type: '0x1',
+          value: '0x1',
+        }],
+      })) as `0x${string}`;
+
+      const transaction = await matched.client.getTransaction({ hash });
+      expect(transaction.type).toBe('eip2930');
+      expect(transaction.accessList).toEqual([
+        {
+          address: account.address.toLowerCase(),
+          storageKeys: accessList[0].storageKeys,
+        },
+      ]);
+      expect(matched.sentTransactionRequests[0]).toMatchObject({
+        accessList,
+        from: account.address,
+        gasPrice: '1000000000',
+        hash,
+        to: account.address,
+        type: 'eip2930',
+        value: '1',
+      });
     } finally {
       await anvil.stop();
     }
