@@ -201,6 +201,7 @@ test('SafeTransactionServiceClient uses Safe Transaction Service REST endpoints'
     `POST /api/v1/safes/${SAFE_ADDRESS}/multisig-transactions/`,
     `POST /api/v1/multisig-transactions/${safeTxHash}/confirmations/`,
     `GET /api/v1/multisig-transactions/${safeTxHash}/`,
+    `GET /api/v1/multisig-transactions/${safeTxHash}/`,
     `GET /api/v1/multisig-transactions/${safeTxHash}/confirmations/`,
     `GET /api/v1/safes/${SAFE_ADDRESS}/multisig-transactions/`,
   ]);
@@ -217,7 +218,7 @@ test('SafeTransactionServiceClient uses Safe Transaction Service REST endpoints'
   });
 });
 
-test('SafeTransactionServiceClient refetches after empty Safe service POST responses', async () => {
+test('SafeTransactionServiceClient refetches after Safe service POST responses', async () => {
   const requests: Array<{ url: string; init: RequestInit }> = [];
   const owner1 = '0x0000000000000000000000000000000000000001' as const;
   const owner2 = '0x0000000000000000000000000000000000000002' as const;
@@ -257,7 +258,14 @@ test('SafeTransactionServiceClient refetches after empty Safe service POST respo
     }
     if (init.method === 'POST' && pathname.endsWith('/confirmations/')) {
       confirmed = true;
-      return new Response(null, { status: 201 });
+      return new Response(
+        JSON.stringify({
+          owner: owner2,
+          signature: deterministicSafeSignature(safeTxHash, owner2),
+          submissionDate: '2026-01-02T03:04:05.000Z',
+        }),
+        { status: 201, headers: { 'content-type': 'application/json' } },
+      );
     }
     if (init.method === 'GET' && pathname.endsWith(`/multisig-transactions/${safeTxHash}/`)) {
       return new Response(JSON.stringify(responseBody()), {
@@ -393,6 +401,46 @@ test('SafeWalletHarness proposes, confirms, enforces threshold, and records exec
     isExecuted: true,
     transactionHash: executed.txHash,
   });
+});
+
+test('SafeWalletHarness rolls back auto nonce when proposal fails', async ({ chain }) => {
+  const [owner] = (await chain.accounts()).slice(0, 1) as [Address];
+  class FailingOnceSafeTransactionService extends InMemorySafeTransactionService {
+    private remainingFailures = 1;
+
+    override async proposeTransaction(
+      proposal: Parameters<InMemorySafeTransactionService['proposeTransaction']>[0],
+    ) {
+      if (this.remainingFailures > 0) {
+        this.remainingFailures -= 1;
+        throw new Error('transient proposal failure');
+      }
+      return super.proposeTransaction(proposal);
+    }
+  }
+
+  const safe = new SafeWalletHarness({
+    safeAddress: SAFE_ADDRESS,
+    owners: [owner],
+    threshold: 1,
+    chainId: chain.client.chain.id,
+    transactionService: new FailingOnceSafeTransactionService(),
+  });
+
+  await expect(
+    safe.proposeTransaction({
+      proposer: owner,
+      transaction: { to: RECIPIENT, value: 1n, data: '0x' },
+    }),
+  ).rejects.toThrow('transient proposal failure');
+  expect(safe.currentNonce).toBe(0n);
+
+  const proposed = await safe.proposeTransaction({
+    proposer: owner,
+    transaction: { to: RECIPIENT, value: 1n, data: '0x' },
+  });
+  expect(proposed.nonce).toBe('0');
+  expect(safe.currentNonce).toBe(1n);
 });
 
 test('injectSafeAppBridge answers Safe Apps SDK iframe requests', async ({ page, chain }) => {

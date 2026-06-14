@@ -1,13 +1,14 @@
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { expect, test, type Locator } from '@playwright/test';
+import { chromium, expect, test, type BrowserContext, type Locator } from '@playwright/test';
 import { buildWalletExtensionProfile, cloneWalletProfile } from '../src/real-wallet-cache.js';
 import {
   extensionIdFromUrl,
   extensionManifestDefaultPage,
   extensionManifestName,
   extensionPageUrl,
+  launchRealWalletExtension,
   openRealWalletExtensionPage,
   readExtensionManifest,
   resolveExtensionPageUrl,
@@ -90,6 +91,50 @@ test('extensionManifestName returns undefined for localized manifest message nam
 
   expect(extensionManifestName(extensionDir)).toBeUndefined();
   expect(extensionManifestDefaultPage(readExtensionManifest(extensionDir))).toBe('options.html');
+});
+
+test('launchRealWalletExtension closes context when extension discovery fails', async () => {
+  const extensionDir = fs.mkdtempSync(path.join(os.tmpdir(), 'web3-tester-extension-discovery-'));
+  const profileDir = fs.mkdtempSync(path.join(os.tmpdir(), 'web3-tester-profile-discovery-'));
+  fs.writeFileSync(
+    path.join(extensionDir, 'manifest.json'),
+    JSON.stringify({
+      manifest_version: 3,
+      name: '__MSG_appName__',
+      version: '1.0.0',
+    }),
+  );
+
+  let closed = false;
+  const context = {
+    serviceWorkers: () => [],
+    pages: () => [],
+    waitForEvent: async () => {
+      throw new Error('timed out waiting for service worker');
+    },
+    close: async () => {
+      closed = true;
+    },
+  } as unknown as BrowserContext;
+  const launcher = chromium as unknown as {
+    launchPersistentContext: typeof chromium.launchPersistentContext;
+  };
+  const originalLaunchPersistentContext = launcher.launchPersistentContext;
+  launcher.launchPersistentContext = async () => context;
+
+  try {
+    await expect(
+      launchRealWalletExtension({
+        extensionPath: extensionDir,
+        headless: true,
+        initialPage: false,
+        profileDir,
+      }),
+    ).rejects.toThrow(/Pass extensionName or extensionId/);
+    expect(closed).toBe(true);
+  } finally {
+    launcher.launchPersistentContext = originalLaunchPersistentContext;
+  }
 });
 
 test('openRealWalletExtensionPage reuses hash-routed extension tabs', async () => {

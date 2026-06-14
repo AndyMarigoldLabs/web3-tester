@@ -320,18 +320,25 @@ export async function launchRealWalletExtension(
       throw error;
     });
 
-  const extensionId =
-    options.extensionId ??
-    (await discoverRealWalletExtensionId(context, {
-      extensionName,
-    }));
+  let extensionId: string;
+  let page: Page | undefined;
+  try {
+    extensionId =
+      options.extensionId ??
+      (await discoverRealWalletExtensionId(context, {
+        extensionName,
+      }));
 
-  const initialPage =
-    options.initialPage === undefined ? extensionManifestDefaultPage(manifest) : options.initialPage;
-  const page =
-    initialPage === false || initialPage === undefined
-      ? undefined
-      : await openRealWalletExtensionPage(context, extensionId, initialPage);
+    const initialPage =
+      options.initialPage === undefined ? extensionManifestDefaultPage(manifest) : options.initialPage;
+    page =
+      initialPage === false || initialPage === undefined
+        ? undefined
+        : await openRealWalletExtensionPage(context, extensionId, initialPage);
+  } catch (error) {
+    await context.close().catch(() => undefined);
+    throw error;
+  }
 
   return {
     close: () => context.close(),
